@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpuensemble-planner"
+version = "0.1.0"
+description = "Placement planner for GPUEnsemble: decides which GPU holds which model layers"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+gpuensemble-plan = "gpuensemble_planner.cli:main"
+gpuensemble = "gpuensemble_planner.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+gpuensemble_planner = ["catalog.json"]

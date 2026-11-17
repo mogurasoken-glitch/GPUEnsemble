@@ -1,0 +1,253 @@
+{
+  "_comment": "Measured with `gpuensemble-plan describe` on Qwen3-30B-A3B-Q4_K_M.gguf from Qwen/Qwen3-30B-A3B-GGUF (E5 rig, 2026-11-15). 128 experts with 8 active per token. As in Qwen3-32B, Q4_K_M keeps some tensors in Q6_K in the first and last layers and every third layer between, so layers come in two sizes.",
+  "name": "Qwen3-30B-A3B Q4_K_M",
+  "architecture": "qwen3moe",
+  "n_vocab": 151936,
+  "layers": [
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11682816,
+      "expert_bytes": 339738624,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 11953152,
+      "expert_bytes": 391643136,
+      "kv_bytes_per_token": 2048
+    }
+  ],
+  "head_bytes": 255260672,
+  "embed_bytes": 175030272,
+  "n_expert": 128,
+  "n_expert_used": 8,
+  "notes": []
+}

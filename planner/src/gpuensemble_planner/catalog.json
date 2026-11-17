@@ -1,0 +1,612 @@
+{
+  "_comment": "Models GPUEnsemble chooses from, checked by hand. rank is a rough quality order (1 = best) as of 2026-11; edit it or add entries freely. An entry needs id, name, rank, hf_repo and hf_quant; `profile` is optional: without it, `catalog --update` reads the header of the file on Hugging Face (a few MB) and keeps the profile it builds. `pull` downloads the .gguf whose name has hf_quant as a whole word from the hf_repo repository on Hugging Face (all split parts). The app fetches the newest copy of this file from the repository; it uses it when its `updated` date is later than the installed one.",
+  "updated": "2026-11-16",
+  "models": [
+    {
+      "id": "deepseek-v4-flash",
+      "name": "DeepSeek-V4-Flash 284B-A13B Q4_K_XL",
+      "rank": 1,
+      "params_b": 284.3,
+      "active_b": 13,
+      "file_gib": 144.45,
+      "hf_repo": "unsloth/DeepSeek-V4-Flash-GGUF",
+      "hf_quant": "UD-Q4_K_XL",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "glm-5.3-flash",
+      "name": "GLM-5.3-Flash 313B-A18B Q4_K_XL",
+      "rank": 2,
+      "params_b": 313.3,
+      "active_b": 18,
+      "file_gib": 185.99,
+      "hf_repo": "unsloth/GLM-5.3-Flash-GGUF",
+      "hf_quant": "UD-Q4_K_XL",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "minimax-m3",
+      "name": "MiniMax-M3 426B-A23B Q4_K_XL",
+      "rank": 3,
+      "params_b": 426,
+      "active_b": 23,
+      "file_gib": 247.57,
+      "hf_repo": "unsloth/MiniMax-M3-GGUF",
+      "hf_quant": "UD-Q4_K_XL",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "qwen3.5-397b-a17b",
+      "name": "Qwen3.5-397B-A17B Q4_K_M",
+      "rank": 4,
+      "params_b": 396.4,
+      "active_b": 17,
+      "file_gib": 227.33,
+      "hf_repo": "unsloth/Qwen3.5-397B-A17B-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "mimo-v2.6-flash",
+      "name": "MiMo-V2.6-Flash 309B-A15B MXFP4",
+      "rank": 5,
+      "params_b": 308.8,
+      "active_b": 15,
+      "file_gib": 155.88,
+      "hf_repo": "ggml-org/MiMo-V2.6-Flash-RL-GGUF",
+      "hf_quant": "MXFP4",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "hy3",
+      "name": "Hy3 299B-A21B Q4_K_M",
+      "rank": 6,
+      "params_b": 298.8,
+      "active_b": 21,
+      "file_gib": 169.65,
+      "hf_repo": "bartowski/Hy3-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "qwen3.8-flash-next",
+      "name": "Qwen3.8-Flash-Next 177B-A6B Q4_K_XL",
+      "rank": 7,
+      "params_b": 176.9,
+      "active_b": 6,
+      "file_gib": 103.68,
+      "hf_repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+      "hf_quant": "UD-Q4_K_XL",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "step-3.7-flash",
+      "name": "Step-3.7-Flash 197B-A11B Q4_K_XL",
+      "rank": 8,
+      "params_b": 197,
+      "active_b": 11,
+      "file_gib": 113.83,
+      "hf_repo": "unsloth/Step-3.7-Flash-GGUF",
+      "hf_quant": "UD-Q4_K_XL",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "qwen3-235b-a22b",
+      "name": "Qwen3-235B-A22B-2507 Q4_K_M",
+      "rank": 9,
+      "params_b": 235.1,
+      "active_b": 22,
+      "file_gib": 132.39,
+      "hf_repo": "unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "gpt-oss-120b",
+      "name": "gpt-oss-120b MXFP4",
+      "rank": 10,
+      "params_b": 117,
+      "active_b": 5.1,
+      "file_gib": 59.03,
+      "hf_repo": "ggml-org/gpt-oss-120b-GGUF",
+      "hf_quant": "mxfp4",
+      "_source": "examples/gpt-oss-120b.json (describe of the GGUF; 7.80 tok/s measured on the E5 rig)",
+      "profile": {
+        "name": "gpt-oss-120b MXFP4",
+        "architecture": "gpt-oss",
+        "n_expert": 128,
+        "n_expert_used": 4,
+        "uniform": {
+          "n_layers": 36,
+          "dense_gib_per_layer": 0.02769,
+          "expert_gib_per_layer": 1.57997,
+          "kv_bytes_per_token_per_layer": 2048
+        },
+        "head_gib": 0.5731,
+        "n_vocab": 201088,
+        "embed_gib": 0.5731
+      }
+    },
+    {
+      "id": "qwen3.8-27b",
+      "name": "Qwen3.8-27B Q4_K_M",
+      "rank": 11,
+      "params_b": 27.3,
+      "active_b": 27.3,
+      "file_gib": 16.24,
+      "hf_repo": "bartowski/Qwen3.8-27B-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "describe of the GGUF, averaged over its 64 layers: 48 are recurrent (a state of 3,268,608 bytes for each sequence, no KV cache) and 16 have a KV cache of 4096 bytes a token. The block that predicts tokens further ahead (0.22 GiB) is not loaded and left out. 30.0 tok/s measured with all layers on an RTX 4090 on another PC (benchmarks/phase2c-three-cards.md)",
+      "profile": {
+        "name": "Qwen3.8-27B Q4_K_M",
+        "architecture": "qwen35",
+        "uniform": {
+          "n_layers": 64,
+          "dense_gib_per_layer": 0.2246,
+          "kv_bytes_per_token_per_layer": 1024,
+          "state_bytes_per_layer": 2451456
+        },
+        "head_gib": 0.9713,
+        "n_vocab": 248320,
+        "embed_gib": 0.666
+      }
+    },
+    {
+      "id": "nemotron-3-ultra-q2",
+      "name": "Nemotron-3-Ultra 550B-A55B Q2_K_XL",
+      "rank": 12,
+      "params_b": 549.3,
+      "active_b": 55,
+      "file_gib": 188.29,
+      "hf_repo": "unsloth/NVIDIA-Nemotron-3-Ultra-550B-A55B-GGUF",
+      "hf_quant": "UD-Q2_K_XL",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; 2-bit; Mamba hybrid"
+    },
+    {
+      "id": "deepseek-v4-flash-q2",
+      "name": "DeepSeek-V4-Flash 284B-A13B Q2_K_XL",
+      "rank": 13,
+      "params_b": 284.3,
+      "active_b": 13,
+      "file_gib": 90.18,
+      "hf_repo": "unsloth/DeepSeek-V4-Flash-GGUF",
+      "hf_quant": "UD-Q2_K_XL",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; 2-bit"
+    },
+    {
+      "id": "glm-5.3-flash-q2",
+      "name": "GLM-5.3-Flash 313B-A18B Q2_K_XL",
+      "rank": 14,
+      "params_b": 313.3,
+      "active_b": 18,
+      "file_gib": 101.25,
+      "hf_repo": "unsloth/GLM-5.3-Flash-GGUF",
+      "hf_quant": "UD-Q2_K_XL",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; 2-bit"
+    },
+    {
+      "id": "minimax-m3-q2",
+      "name": "MiniMax-M3 426B-A23B Q2_K_XL",
+      "rank": 15,
+      "params_b": 426,
+      "active_b": 23,
+      "file_gib": 133.98,
+      "hf_repo": "unsloth/MiniMax-M3-GGUF",
+      "hf_quant": "UD-Q2_K_XL",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; 2-bit"
+    },
+    {
+      "id": "qwen3.5-397b-a17b-q3",
+      "name": "Qwen3.5-397B-A17B IQ3_XXS",
+      "rank": 16,
+      "params_b": 396.4,
+      "active_b": 17,
+      "file_gib": 130.69,
+      "hf_repo": "unsloth/Qwen3.5-397B-A17B-GGUF",
+      "hf_quant": "UD-IQ3_XXS",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; 3-bit"
+    },
+    {
+      "id": "hy3-q2",
+      "name": "Hy3 299B-A21B Q2_K",
+      "rank": 17,
+      "params_b": 298.8,
+      "active_b": 21,
+      "file_gib": 99.36,
+      "hf_repo": "bartowski/Hy3-GGUF",
+      "hf_quant": "Q2_K",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; 2-bit"
+    },
+    {
+      "id": "mimo-v2.6-flash-q2",
+      "name": "MiMo-V2.6-Flash 309B-A15B Q2_K",
+      "rank": 18,
+      "params_b": 308.8,
+      "active_b": 15,
+      "file_gib": 117.69,
+      "hf_repo": "ggml-org/MiMo-V2.6-Flash-RL-GGUF",
+      "hf_quant": "Q2_K",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; 2-bit"
+    },
+    {
+      "id": "qwen3.8-flash-next-q2",
+      "name": "Qwen3.8-Flash-Next 177B-A6B Q2_K_XL",
+      "rank": 19,
+      "params_b": 176.9,
+      "active_b": 6,
+      "file_gib": 73.45,
+      "hf_repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+      "hf_quant": "UD-Q2_K_XL",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; 2-bit"
+    },
+    {
+      "id": "step-3.7-flash-q2",
+      "name": "Step-3.7-Flash 197B-A11B Q2_K_XL",
+      "rank": 20,
+      "params_b": 197,
+      "active_b": 11,
+      "file_gib": 61.27,
+      "hf_repo": "unsloth/Step-3.7-Flash-GGUF",
+      "hf_quant": "UD-Q2_K_XL",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; 2-bit"
+    },
+    {
+      "id": "qwen3-235b-a22b-q2",
+      "name": "Qwen3-235B-A22B-2507 Q2_K_XL",
+      "rank": 21,
+      "params_b": 235.1,
+      "active_b": 22,
+      "file_gib": 82.67,
+      "hf_repo": "unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF",
+      "hf_quant": "UD-Q2_K_XL",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; 2-bit"
+    },
+    {
+      "id": "qwen3.5-122b-a10b",
+      "name": "Qwen3.5-122B-A10B Q4_K_M",
+      "rank": 22,
+      "params_b": 122,
+      "active_b": 10,
+      "file_gib": 71.28,
+      "hf_repo": "unsloth/Qwen3.5-122B-A10B-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "mistral-small-4-119b",
+      "name": "Mistral-Small-4-119B Q4_K_M",
+      "rank": 23,
+      "params_b": 119,
+      "active_b": 6.5,
+      "file_gib": 68.69,
+      "hf_repo": "unsloth/Mistral-Small-4-119B-2603-GGUF",
+      "hf_quant": "UD-Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "nemotron-3-super-120b",
+      "name": "Nemotron-3-Super-120B-A12B Q4_K_M",
+      "rank": 24,
+      "params_b": 120,
+      "active_b": 12,
+      "file_gib": 76.87,
+      "hf_repo": "unsloth/NVIDIA-Nemotron-3-Super-120B-A12B-GGUF",
+      "hf_quant": "UD-Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; Mamba hybrid"
+    },
+    {
+      "id": "nemotron-3.5-super-vl",
+      "name": "Nemotron-3.5-Super-VL 120B-A12B Q4_K_XL",
+      "rank": 25,
+      "params_b": 120,
+      "active_b": 12,
+      "file_gib": 80.94,
+      "hf_repo": "unsloth/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF",
+      "hf_quant": "UD-Q4_K_XL",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; Mamba hybrid"
+    },
+    {
+      "id": "gemma-4-31b",
+      "name": "Gemma-4-31B Q4_K_M",
+      "rank": 26,
+      "params_b": 31.3,
+      "active_b": 31.3,
+      "file_gib": 17.06,
+      "hf_repo": "unsloth/gemma-4-31B-it-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "qwen3.6-35b-a3b",
+      "name": "Qwen3.6-35B-A3B Q4_K_M",
+      "rank": 27,
+      "params_b": 36,
+      "active_b": 3,
+      "file_gib": 20.61,
+      "hf_repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+      "hf_quant": "UD-Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; hybrid like Qwen3.8 (qwen35moe)"
+    },
+    {
+      "id": "glm-4.5-air",
+      "name": "GLM-4.5-Air Q4_K_M",
+      "rank": 28,
+      "params_b": 110.5,
+      "active_b": 12,
+      "file_gib": 59.26,
+      "hf_repo": "ggml-org/GLM-4.5-Air-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "llama-4-scout",
+      "name": "Llama-4-Scout 109B-A17B Q4_K_M",
+      "rank": 29,
+      "params_b": 107.8,
+      "active_b": 17,
+      "file_gib": 60.87,
+      "hf_repo": "ggml-org/Llama-4-Scout-17B-16E-Instruct-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "mistral-medium-3.5",
+      "name": "Mistral-Medium-3.5 125B Q4_K_M",
+      "rank": 30,
+      "params_b": 125,
+      "active_b": 125,
+      "file_gib": 69.76,
+      "hf_repo": "unsloth/Mistral-Medium-3.5-128B-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; dense: every weight is read for each token"
+    },
+    {
+      "id": "devstral-2-123b",
+      "name": "Devstral-2 123B Q4_K_M",
+      "rank": 31,
+      "params_b": 125,
+      "active_b": 125,
+      "file_gib": 69.76,
+      "hf_repo": "unsloth/Devstral-2-123B-Instruct-2512-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; dense; for code"
+    },
+    {
+      "id": "qwen3-coder-next",
+      "name": "Qwen3-Coder-Next 80B-A3B Q4_K_M",
+      "rank": 32,
+      "params_b": 79.7,
+      "active_b": 3,
+      "file_gib": 45.2,
+      "hf_repo": "unsloth/Qwen3-Coder-Next-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; for code"
+    },
+    {
+      "id": "gemma-4-26b-a4b",
+      "name": "Gemma-4-26B-A4B Q4_K_M",
+      "rank": 33,
+      "params_b": 25.8,
+      "active_b": 3.8,
+      "file_gib": 15.79,
+      "hf_repo": "unsloth/gemma-4-26B-A4B-it-GGUF",
+      "hf_quant": "UD-Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "nemotron-3.5-bolt-74b",
+      "name": "Nemotron-3.5-Bolt-74B-A9B Q4_K_XL",
+      "rank": 34,
+      "params_b": 74.9,
+      "active_b": 9,
+      "file_gib": 46.77,
+      "hf_repo": "unsloth/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-GGUF",
+      "hf_quant": "UD-Q4_K_XL",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; Mamba hybrid"
+    },
+    {
+      "id": "olmo-3.1-32b-think",
+      "name": "Olmo-3.1-32B-Think Q4_K_M",
+      "rank": 35,
+      "params_b": 32.2,
+      "active_b": 32.2,
+      "file_gib": 18.14,
+      "hf_repo": "bartowski/allenai_Olmo-3.1-32B-Think-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "nemotron-3.5-lightning-30b",
+      "name": "Nemotron-3.5-Lightning-30B-A3B Q4_0",
+      "rank": 36,
+      "params_b": 31.6,
+      "active_b": 3,
+      "file_gib": 17.6,
+      "hf_repo": "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+      "hf_quant": "Q4_0",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; Mamba hybrid"
+    },
+    {
+      "id": "granite-4.2-30b",
+      "name": "Granite-4.2-30B Q4_K_M",
+      "rank": 37,
+      "params_b": 29.3,
+      "active_b": 29.3,
+      "file_gib": 16.79,
+      "hf_repo": "bartowski/granite-4.2-30b-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "qwen3-32b",
+      "name": "Qwen3-32B Q4_K_M",
+      "rank": 38,
+      "params_b": 32.8,
+      "active_b": 32.8,
+      "file_gib": 18.4,
+      "hf_repo": "Qwen/Qwen3-32B-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "average of the real per-layer profile in examples/qwen3-32b-q4_k_m.json (describe of the GGUF)",
+      "profile": {
+        "name": "Qwen3-32B Q4_K_M",
+        "architecture": "qwen3",
+        "uniform": {
+          "n_layers": 64,
+          "dense_gib_per_layer": 0.2718,
+          "kv_bytes_per_token_per_layer": 4096
+        },
+        "head_gib": 0.594,
+        "n_vocab": 151936,
+        "embed_gib": 0.4075
+      }
+    },
+    {
+      "id": "gpt-oss-20b",
+      "name": "gpt-oss-20b MXFP4",
+      "rank": 39,
+      "params_b": 21,
+      "active_b": 3.6,
+      "file_gib": 11.28,
+      "hf_repo": "ggml-org/gpt-oss-20b-GGUF",
+      "hf_quant": "mxfp4",
+      "_source": "examples/gpt-oss-20b.json (describe of the GGUF; 90.1 tok/s measured on the E5 rig)",
+      "profile": {
+        "name": "gpt-oss-20b MXFP4",
+        "architecture": "gpt-oss",
+        "n_expert": 32,
+        "n_expert_used": 4,
+        "uniform": {
+          "n_layers": 24,
+          "dense_gib_per_layer": 0.02666,
+          "expert_gib_per_layer": 0.39499,
+          "kv_bytes_per_token_per_layer": 2048
+        },
+        "head_gib": 0.5731,
+        "n_vocab": 201088,
+        "embed_gib": 0.5731
+      }
+    },
+    {
+      "id": "devstral-small-2-24b",
+      "name": "Devstral-Small-2-24B Q4_K_M",
+      "rank": 40,
+      "params_b": 24,
+      "active_b": 24,
+      "file_gib": 13.35,
+      "hf_repo": "unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`; for code"
+    },
+    {
+      "id": "gemma-4-12b",
+      "name": "Gemma-4-12B Q4_K_M",
+      "rank": 41,
+      "params_b": 12,
+      "active_b": 12,
+      "file_gib": 6.63,
+      "hf_repo": "unsloth/gemma-4-12b-it-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "ministral-3-14b",
+      "name": "Ministral-3-14B Q4_K_M",
+      "rank": 42,
+      "params_b": 13.9,
+      "active_b": 13.9,
+      "file_gib": 7.67,
+      "hf_repo": "unsloth/Ministral-3-14B-Instruct-2512-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "phi-4",
+      "name": "Phi-4 14B Q4_K_M",
+      "rank": 43,
+      "params_b": 14.7,
+      "active_b": 14.7,
+      "file_gib": 8.28,
+      "hf_repo": "unsloth/phi-4-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "qwen3.5-9b",
+      "name": "Qwen3.5-9B Q4_K_M",
+      "rank": 44,
+      "params_b": 9.7,
+      "active_b": 9.7,
+      "file_gib": 5.29,
+      "hf_repo": "unsloth/Qwen3.5-9B-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "granite-4.2-8b",
+      "name": "Granite-4.2-8B Q4_K_M",
+      "rank": 45,
+      "params_b": 8.8,
+      "active_b": 8.8,
+      "file_gib": 5.16,
+      "hf_repo": "bartowski/granite-4.2-8b-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "ministral-3-8b",
+      "name": "Ministral-3-8B Q4_K_M",
+      "rank": 46,
+      "params_b": 8.9,
+      "active_b": 8.9,
+      "file_gib": 4.84,
+      "hf_repo": "unsloth/Ministral-3-8B-Instruct-2512-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "qwen3-8b",
+      "name": "Qwen3-8B Q4_K_M",
+      "rank": 47,
+      "params_b": 8.2,
+      "active_b": 8.2,
+      "file_gib": 4.68,
+      "hf_repo": "Qwen/Qwen3-8B-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "36 layers, hidden 4096, 8 KV heads x 128, vocab 151936; ~5.0 GB file",
+      "profile": {
+        "name": "Qwen3-8B Q4_K_M",
+        "architecture": "qwen3",
+        "uniform": {
+          "n_layers": 36,
+          "dense_gib_per_layer": 0.1079,
+          "kv_bytes_per_token_per_layer": 4096
+        },
+        "head_gib": 0.475,
+        "n_vocab": 151936,
+        "embed_gib": 0.326
+      }
+    },
+    {
+      "id": "gemma-4-e4b",
+      "name": "Gemma-4-E4B Q4_0",
+      "rank": 48,
+      "params_b": 8,
+      "active_b": 4,
+      "file_gib": 4.27,
+      "hf_repo": "ggml-org/gemma-4-E4B-it-GGUF",
+      "hf_quant": "Q4_0",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    },
+    {
+      "id": "qwen3.5-4b",
+      "name": "Qwen3.5-4B Q4_K_M",
+      "rank": 49,
+      "params_b": 4.7,
+      "active_b": 4.7,
+      "file_gib": 2.55,
+      "hf_repo": "unsloth/Qwen3.5-4B-GGUF",
+      "hf_quant": "Q4_K_M",
+      "_source": "size from the Hugging Face file list (2026-11-16); the profile is read from the start of the file by `catalog --update`"
+    }
+  ]
+}

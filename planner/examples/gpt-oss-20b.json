@@ -1,0 +1,133 @@
+{
+  "_comment": "Measured with `gpuensemble-plan describe` on gpt-oss-20b-MXFP4.gguf from ggml-org/gpt-oss-20b-GGUF (E5 rig, 2026-11-15). 32 experts with 4 active per token.",
+  "name": "gpt-oss-20b MXFP4",
+  "architecture": "gpt-oss",
+  "n_vocab": 201088,
+  "layers": [
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    },
+    {
+      "dense_bytes": 28625024,
+      "expert_bytes": 424120320,
+      "kv_bytes_per_token": 2048
+    }
+  ],
+  "head_bytes": 615340800,
+  "embed_bytes": 615329280,
+  "n_expert": 32,
+  "n_expert_used": 4,
+  "notes": []
+}

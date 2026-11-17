@@ -1,0 +1,13 @@
+{
+  "_comment": "Estimate without the file: a Llama-style 70B dense model at Q4_K_M (~42.5 GB).",
+  "name": "70B dense Q4_K_M (estimate)",
+  "architecture": "llama",
+  "n_vocab": 128256,
+  "uniform": {
+    "n_layers": 80,
+    "dense_gib_per_layer": 0.48,
+    "kv_bytes_per_token_per_layer": 4096
+  },
+  "head_gib": 0.65,
+  "embed_gib": 0.5
+}

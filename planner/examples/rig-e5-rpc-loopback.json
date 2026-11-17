@@ -1,0 +1,36 @@
+{
+  "_comment": "The E5 rig (rig-e5-turing.json) with the RTX 2080 SUPER reached through llama.cpp's RPC server on the same PC, as measured for phase 2a (benchmarks/phase2a-rpc-loopback.md): `gpuensemble worker --device CUDA1` serves the SUPER on 127.0.0.1:50052 and llama-server uses it as RPC0. Host and card numbers are the E5 rig file's; the RPC cost is the measured 0.8 ms per token (the default for a loopback address).",
+  "reserve_gib_per_gpu": 1.0,
+  "gpus": [
+    {
+      "name": "RTX 2080 Ti 11GB",
+      "vram_gib": 11.0,
+      "bandwidth_gbs": 463,
+      "pcie_gbs": 3.2,
+      "reserve_gib": 1.15
+    },
+    {
+      "name": "RTX 2080 SUPER 8GB (RPC)",
+      "vram_gib": 8.0,
+      "bandwidth_gbs": 362,
+      "rpc": "127.0.0.1:50052",
+      "llama_device": "CUDA1"
+    }
+  ],
+  "host": {
+    "ram_for_weights_gib": 52,
+    "cpu_bandwidth_gbs": 19.6,
+    "cpu_kv_gbs": {
+      "f16": 3.0,
+      "q8_0": 1.9
+    },
+    "expert_bandwidth_gbs": 17,
+    "expert_slowdown_per_gib": 0.016,
+    "expert_path": "auto",
+    "cpu_overhead_ms": 10,
+    "layer_overhead_ms": 0.03,
+    "moe_layer_overhead_ms": 0.22,
+    "last_stage_reserve_gib": 0.03,
+    "threads": 32
+  }
+}

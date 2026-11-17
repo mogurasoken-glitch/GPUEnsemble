@@ -1,0 +1,77 @@
+name: windows-zip
+
+# Builds the Windows zips (embeddable Python + planner + launchers, with and
+# without the window app GPUEnsemble.exe), checks
+# that it starts on a clean Windows machine, and keeps it as a build artifact.
+#
+# It does not run on pull requests or pushes: a Windows build takes a while,
+# and everyday tests run with `python -m unittest` (see planner/README.md and
+# packaging/windows/README.md). This workflow is started by hand
+# (workflow_dispatch) when the zip itself has to be checked, such as before going public or a release, and by
+# release.yml for a tag.
+on:
+  workflow_dispatch:
+  workflow_call:  # release.yml builds the zip it attaches with this
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Planner tests
+        working-directory: planner
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests --durations 10  # the slowest tests are named: a wait that only Windows has shows here
+
+      - name: Build script tests
+        run: python -m unittest discover -s packaging/windows -p "test_*.py"
+
+      - name: Build the zip
+        run: python packaging/windows/build_zip.py --out dist --require-app  # windows-latest has the .NET SDK
+
+      - name: Start it from the zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"  # stderr is normal output here; exit codes are checked
+          # Two zips: -app (with GPUEnsemble.exe) and -cli (without). The commands are checked from -app.
+          $zip = Get-ChildItem dist -Filter *-app.zip | Select-Object -First 1
+          $cli = Get-ChildItem dist -Filter *-cli.zip | Select-Object -First 1
+          if (-not $zip -or -not $cli) { throw "expected an -app and a -cli zip" }
+          Expand-Archive $zip.FullName -DestinationPath smoke
+          Expand-Archive $cli.FullName -DestinationPath smoke-cli
+          $app = (Get-ChildItem smoke -Directory | Select-Object -First 1).FullName
+          $appCli = (Get-ChildItem smoke-cli -Directory | Select-Object -First 1).FullName
+          function Check($what) { if ($LASTEXITCODE -ne 0) { throw "$what failed with exit code $LASTEXITCODE" } }
+          & "$app\gpuensemble.cmd" --help; Check "--help"
+          & "$app\gpuensemble.cmd" models; Check "models"
+          if (-not (Test-Path "$app\GPUEnsemble.exe")) { throw "GPUEnsemble.exe is missing" }
+          if (Test-Path "$appCli\GPUEnsemble.exe") { throw "the -cli zip holds GPUEnsemble.exe" }
+          & "$appCli\gpuensemble.cmd" models; Check "models (cli zip)"
+          & "$app\gpuensemble.cmd" state --rig "$app\examples\rig-e5-turing.json" | Out-Null; Check "state"
+          $out = & "$app\gpuensemble.cmd" recommend --rig "$app\examples\rig-e5-turing.json" 2>&1 | Out-String
+          Check "recommend"
+          Write-Output $out
+          if ($out -notmatch "recommended: gpt-oss-120b") { throw "unexpected recommendation" }
+          if ($out -notmatch "gpuensemble.cmd up --model") { throw "the suggested command does not name the launcher" }
+          # What the double-click launcher runs (it waits for Enter; empty input ends it).
+          $out = "" | & "$app\python\python.exe" -m gpuensemble_planner.launch --help 2>&1 | Out-String
+          Write-Output $out
+          if ($out -notmatch "GPUEnsemble stopped \(exit code 0\)") { throw "launch module did not run" }
+          # Nothing may be written outside the folder: the data folder is where downloads go.
+          if (Test-Path "$env:LOCALAPPDATA\GPUEnsemble") { throw "wrote to LOCALAPPDATA" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPUEnsemble-windows-x64
+          path: dist/*.zip
+          if-no-files-found: error

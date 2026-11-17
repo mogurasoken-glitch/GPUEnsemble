@@ -1,0 +1,333 @@
+{
+  "_comment": "Measured with `gpuensemble-plan describe` on Qwen3-32B-Q4_K_M.gguf (E5 rig, 2026-11-15). Q4_K_M keeps ffn_down and attn_v in Q6_K for the first and last eighth of the layers and every third layer between, so layers come in two sizes.",
+  "name": "Qwen3-32B Q4_K_M",
+  "architecture": "qwen3",
+  "n_vocab": 151936,
+  "layers": [
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 274310144,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    },
+    {
+      "dense_bytes": 309453824,
+      "expert_bytes": 0,
+      "kv_bytes_per_token": 4096
+    }
+  ],
+  "head_bytes": 638151680,
+  "embed_bytes": 437575680,
+  "n_expert": 0,
+  "n_expert_used": 0,
+  "notes": []
+}

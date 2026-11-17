@@ -1,0 +1,64 @@
+name: release
+
+# Pushing a tag v<version> builds the Windows zip (windows-zip.yml: tests,
+# build, start from the zip) and attaches it to a DRAFT release. Nothing is
+# published by this workflow: the draft is looked at and published by hand.
+#
+#   1. set __version__ (planner/src/gpuensemble_planner/__init__.py) and
+#      version (planner/pyproject.toml), and merge that
+#   2. git tag v0.1.0 && git push origin v0.1.0
+#   3. Releases -> the draft -> check the notes and the zip -> Publish
+#
+# Run by hand (workflow_dispatch) it builds and prints the checksum only.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/windows-zip.yml
+
+  draft:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write  # to create the draft release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag must be the package's version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(PYTHONPATH=planner/src python3 -c "import gpuensemble_planner; print(gpuensemble_planner.__version__)")
+          toml=$(sed -n 's/^version = "\(.*\)"$/\1/p' planner/pyproject.toml)
+          echo "tag $TAG, package $version, pyproject $toml"
+          if [ "v$version" != "$TAG" ] || [ "$version" != "$toml" ]; then
+            echo "::error::the tag, __version__ and pyproject.toml do not agree"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: GPUEnsemble-windows-x64
+          path: dist
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum *.zip | tee SHA256SUMS.txt
+
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/*.zip dist/SHA256SUMS.txt \
+            --draft --verify-tag --title "GPUEnsemble $TAG" --generate-notes
