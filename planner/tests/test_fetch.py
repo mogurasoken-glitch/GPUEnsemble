@@ -571,7 +571,7 @@ class WorkerTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         open(os.path.join(tmp.name, "ggml-rpc-server.exe"), "w").close()
-        port = worker.free_port()
+        port = worker.free_ports()
         seen = {}
 
         def ask(argv, log):

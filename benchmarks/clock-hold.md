@@ -62,3 +62,29 @@ each as in phase2c, then the same with `--no-hold-clocks`. `up` said
 
 The estimate for this placement is 12.6 tok/s. Holding the SUPER is worth about half again over
 nothing held; the 2080 Ti still clocks down while held, so some speed is left on it.
+
+## The 2080 Ti: locked clocks (2026-11-18)
+
+The 2080 Ti drives the display. On it, none of these kept the clocks up between bursts of CUDA work
+(30 ms on, 70 ms off): a Vulkan device held open, an empty `vkQueueSubmit` every 5 ms, or a page
+drawing an animation on the screen. It stayed in P3 at 390-990 MHz, while the SUPER stayed in P2.
+
+`nvidia-smi -i 0 -lgc 1350,2190` (run as administrator; `-rgc` resets it, and so does a reboot) sets a
+floor for the graphics clock. In the same bursty test the Ti then stayed in P2 at 1350 MHz and 6800 MHz
+memory. With a Vulkan device held on it as well, it went to P3 (memory 5000 MHz) instead.
+
+gpt-oss-120b on three cards, same placement, three answers of 400 tokens each, the same night:
+
+| Run | tok/s |
+|---|---|
+| Both cards held, Ti not locked | 15.43, 15.26, 15.25 |
+| Both cards held, Ti locked | 18.05, 17.98, 18.02 |
+| Only the SUPER held, Ti locked | 17.70, 17.76, 17.81 |
+
+That is about 17% faster with the lock. While generating, the Ti's memory clock still fell to P3/P5
+(5000 and 810 MHz) in most samples.
+
+Locking needs administrator rights, so `up` does not do it by default. `up --boost` (boost mode) asks
+for administrator rights, locks the graphics clocks of the cards on this PC that run the model (floor
+62% of the highest clock: 1350 MHz on the Ti, 1320 MHz on the SUPER), and resets them when `up` ends,
+also when `up` is killed.

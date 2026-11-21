@@ -11,7 +11,10 @@ Which build
   the CUDA 12.4 build plus its CUDA runtime DLLs (Windows). It was the
   fastest backend for every model on the development rig.
 * NVIDIA with an older driver, or Linux (no CUDA builds are published): Vulkan.
-* No NVIDIA GPU: the CPU build.
+* An AMD Radeon or Intel Arc card (with or without NVIDIA cards beside it): Vulkan, which
+  runs every maker's cards in one process.
+* No GPU: the CPU build. It can still use the cards of other PCs (llama.cpp's RPC is in every
+  build), so a PC without a GPU can be the main PC.
 
 The release is pinned to the one measured on the development rig
 (``DEFAULT_TAG``); ``--tag latest`` takes the newest.
@@ -120,8 +123,15 @@ def nvidia_driver(run: Callable = subprocess.run) -> tuple[int, ...] | None:
         return None
 
 
-def choose_backend(platform: str, driver: tuple[int, ...] | None) -> tuple[str, str]:
-    """(backend, reason) for this OS and NVIDIA driver."""
+def choose_backend(platform: str, driver: tuple[int, ...] | None, others: list[str] | None = None) -> tuple[str, str]:
+    """(backend, reason) for this OS, NVIDIA driver and the names of any AMD or Intel cards.
+
+    AMD and Intel cards run on the Vulkan build, which runs NVIDIA cards too: with both makers in
+    one PC, Vulkan is the build that pools them all (the CUDA build would see the NVIDIA ones only).
+    """
+    if others:
+        both = " and the NVIDIA card(s)" if driver is not None else ""
+        return "vulkan", f"{', '.join(others)} found; the Vulkan build runs {'them' if len(others) > 1 else 'it'}{both}"
     if driver is None:
         return "cpu", "no NVIDIA GPU found"
     shown = ".".join(str(x) for x in driver)
@@ -211,7 +221,8 @@ def _find_server(root: str) -> str | None:
 def check(install: Install, run: Callable = subprocess.run) -> tuple[int, list[str], str]:
     """Start ``llama-server --list-devices``: (exit code, devices, output)."""
     try:
-        out = run([install.server, "--list-devices"], capture_output=True, text=True, timeout=300,
+        out = run([install.server, "--list-devices"], capture_output=True, text=True, encoding="utf-8",
+                  errors="replace", timeout=300,
                   env=dict(os.environ, CUDA_DEVICE_ORDER="PCI_BUS_ID", **cuda_cache_env()))
     except subprocess.TimeoutExpired:
         return -1, [], "llama-server --list-devices did not finish in 5 minutes"
@@ -296,13 +307,19 @@ def installed(root: str | None = None) -> Install | None:
 
 def setup(tag: str = DEFAULT_TAG, backend: str = "auto", root: str | None = None, force: bool = False,
           opener: Callable = urllib.request.urlopen, run: Callable = subprocess.run,
-          platform: str | None = None, log: Callable[[str], None] | None = None) -> Install:
+          platform: str | None = None, log: Callable[[str], None] | None = None,
+          others: list[str] | None = None) -> Install:
     """Download, unpack and check llama.cpp; reuses an earlier install of the same build."""
     log = log or (lambda s: print(s, file=sys.stderr, flush=True))
     platform = platform or _platform()
     root = root or llama_root()
     if backend == "auto":
-        backend, why = choose_backend(platform, nvidia_driver(run))
+        from .devices import other_cards  # devices imports this module
+
+        if others is None:
+            # Ask the system only when the commands are real ones (tests pass their own ``run``).
+            others = [a.name for a in other_cards()] if platform == _platform() and run is subprocess.run else []
+        backend, why = choose_backend(platform, nvidia_driver(run), others)
         log(f"llama.cpp backend: {backend} ({why})")
     previous = None if force else installed(root)
     if previous and (previous.tag, previous.backend) == (tag, backend):

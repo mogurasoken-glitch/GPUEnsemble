@@ -187,7 +187,7 @@ class Gate:
     (``serving`` puts one in front of llama-server's API)."""
 
     def __init__(self, listen: tuple[str, int], target: tuple[str, int], allowed: list,
-                 log: Callable[[str], None], what: str = "the RPC server") -> None:
+                 log: Callable[[str], None], what: str = "the RPC server", announce: bool = False) -> None:
         family = socket.AF_INET6 if ":" in listen[0] else socket.AF_INET
         self.sock = socket.socket(family, socket.SOCK_STREAM)
         try:
@@ -202,6 +202,9 @@ class Gate:
         self.allowed = allowed
         self.log = log
         self.what = what
+        self.announce = announce
+        self.users: dict[str, int] = {}  # open connections per address
+        self.users_lock = threading.Lock()
         self.refused = 0
         self._thread: threading.Thread | None = None
 
@@ -221,8 +224,25 @@ class Gate:
                 self.log(f"gate: refused a connection from {peer[0]} (not in --allow)")
                 client.close()
                 continue
-            threading.Thread(target=_join, args=(client, self.target, self.log, peer[0], self.what),
-                             daemon=True).start()
+            threading.Thread(target=self._serve_one, args=(client, peer[0]), daemon=True).start()
+
+    def _serve_one(self, client: socket.socket, peer: str) -> None:
+        """One connection; with ``announce``, says when a PC starts and stops using what is behind the gate."""
+        with self.users_lock:
+            first = self.users.get(peer, 0) == 0
+            self.users[peer] = self.users.get(peer, 0) + 1
+        if first and self.announce:
+            self.log(f"gate: the PC at {peer} is using these GPUs")
+        try:
+            _join(client, self.target, self.log, peer, self.what)
+        finally:
+            with self.users_lock:
+                self.users[peer] -= 1
+                last = self.users[peer] == 0
+                if last:
+                    del self.users[peer]
+            if last and self.announce:
+                self.log(f"gate: the PC at {peer} is done with these GPUs")
 
     def close(self) -> None:
         # On Linux a close alone leaves a blocked accept() listening; shutdown wakes it.

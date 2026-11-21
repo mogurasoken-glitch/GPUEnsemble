@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import socket
 import sys
 import threading
@@ -29,14 +30,16 @@ from typing import Callable
 
 import functools
 
-from . import firewall, fnv, hub, serving, tailscale
+from . import firewall, fnv, homelan, hub, serving, tailscale
 from .childproc import spawn
 from .devices import GIB, Device, check_endpoint, is_loopback
-from .discovery import Approvals, Responder, discovery_port, load_approved, save_approved
+from .discovery import (Approvals, Responder, discovery_port, load_approved, load_denied, local_ipv4, save_approved,
+                        save_denied)
 from .fetch import FetchServer
 from .gate import Gate, parse_allowed
 from .gate import is_allowed as gate_allows
 from .llamabin import Install, cuda_cache_env
+from .monitor import cuda_index, read_gpus
 
 DEFAULT_PORT = 50052
 # llama.cpp renamed rpc-server to ggml-rpc-server; b12375 ships the new name.
@@ -212,6 +215,53 @@ class LiveEntries:
             return self.entries(self.devices)
 
 
+# A main PC's monitor asks how the lent cards are doing every two seconds: one nvidia-smi reading serves a second.
+CARDS_TTL = 1.0
+
+
+class LiveCards:
+    """nvidia-smi's readings of the lent cards (``monitor.parse_gpus``'s keys), for a main PC's monitor.
+
+    Read in a thread of their own at most once per ``ttl`` seconds; an answer
+    waits ``wait`` seconds for a new reading and else goes out with the last
+    one, so a slow nvidia-smi does not hold up the answers to other questions.
+    """
+
+    def __init__(self, devices: list[Device], read: Callable[[], list[dict]], ttl: float = CARDS_TTL,
+                 wait: float | None = None, clock: Callable[[], float] = time.monotonic) -> None:
+        self.indices = [i for i in (cuda_index(d.llama_device) for d in devices) if i is not None]
+        self.read = read
+        self.ttl = ttl
+        self.wait = MEMORY_WAIT if wait is None else wait
+        self.clock = clock
+        self.cards: list[dict] = []
+        self.read_at: float | None = None
+        self.lock = threading.Lock()
+        self.reading: threading.Thread | None = None
+
+    def _read(self) -> None:
+        try:
+            cards = [g for g in self.read() if g.get("index") in self.indices]
+        except Exception:  # noqa: BLE001 - nvidia-smi failed: keep the last reading
+            cards = None
+        with self.lock:
+            if cards is not None:
+                self.cards = cards
+            self.read_at = self.clock()
+            self.reading = None
+
+    def __call__(self) -> list[dict]:
+        with self.lock:
+            thread = self.reading
+            if thread is None and (self.read_at is None or self.clock() - self.read_at >= self.ttl):
+                thread = self.reading = threading.Thread(target=self._read, daemon=True)
+                thread.start()
+        if thread is not None:
+            thread.join(self.wait)
+        with self.lock:
+            return [dict(g) for g in self.cards]
+
+
 def server_command(exe: str, host: str, port: int, devices: list[Device], cache: bool) -> list[str]:
     argv = [exe, "-H", host, "-p", str(port), "-d", ",".join(str(d.llama_device) for d in devices)]
     if cache:
@@ -269,6 +319,33 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+def free_ports(count: int = 3, tries: int = 200) -> int:
+    """The first of ``count`` ports in a row that TCP and UDP can use on 127.0.0.1 right now.
+
+    A worker listens on its port and the next two (``discovery_port``,
+    ``serving.api_port``). On Windows a free port can sit inside a range
+    the system keeps for itself (Hyper-V, WSL), where binding fails with
+    WinError 10013, so each port is tried.
+
+    The ports come from below the range the system hands out by itself
+    (from 49152 on Windows, from 32768 on Linux). A port from that range,
+    as ``free_port`` gives, can go to any program's next connection between
+    this check and the caller's use of it; on a PC busy with downloads that
+    happened to the port itself or to the two after it.
+    """
+    for _ in range(tries):
+        first = random.randrange(20000, 32000)
+        try:
+            for port in range(first, first + count):
+                for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+                    with socket.socket(socket.AF_INET, kind) as s:
+                        s.bind(("127.0.0.1", port))
+        except OSError:
+            continue
+        return first
+    raise OSError(f"no {count} free ports in a row on 127.0.0.1")
+
+
 def start(host: str, port: int, wanted: list[str] | None, cache: bool,
           detect: Callable[[], list[Device]], install: Callable[[], Install],
           exe: str | None = None, log: Callable[[str], None] | None = None,
@@ -277,7 +354,9 @@ def start(host: str, port: int, wanted: list[str] | None, cache: bool,
           stdin=None, approved_path: str | None = None,
           reachability: Callable[..., list[str]] = firewall.reachability_notes,
           tailnet: Callable[[], dict | None] | None = None, fetch: bool | None = None,
-          serve: bool = False, launch: Callable[..., int] = serving.launch) -> int:
+          serve: bool = False, launch: Callable[..., int] = serving.launch,
+          trust_lan: homelan.HomeLan | None = None,
+          read_cards: Callable[[], list[dict]] | None = None) -> int:
     """Everything ``gpuensemble worker`` does; the callables are for tests.
 
     ``lan`` listens on every network behind the gate, answers main PCs that
@@ -293,13 +372,21 @@ def start(host: str, port: int, wanted: list[str] | None, cache: bool,
 
     With ``serve``, a main PC that is let in may also ask this PC to run a
     whole model on the lent cards itself (``serving``); ``launch`` does that.
+
+    With ``lan`` and ``trust_lan`` (``homelan.HomeLan``), a main PC on the same
+    LAN as this PC, on a network Windows treats as private, is let in without
+    asking, for this run (``homelan``). Typing ``deny <address>`` refuses a PC
+    from then on, also one let in without asking; the refusal is remembered.
     """
     log = log or (lambda s: print(s, file=sys.stderr, flush=True))
+    read_cards = read_cards or read_gpus
     out = out if out is not None else sys.stdout
     nets = None
+    denied: set[str] = set()
     if allow or lan:
         nets = parse_allowed(allow or [], allow_empty=lan)
         if lan:
+            denied = set(load_denied(approved_path))
             remembered = load_approved(approved_path)
             nets += [n for n in parse_allowed(remembered, allow_empty=True) if n not in nets]
     if not is_loopback(host) and nets is None and not allow_any:
@@ -316,7 +403,7 @@ def start(host: str, port: int, wanted: list[str] | None, cache: bool,
     endpoint = check_endpoint(f"{shown}:{port}")
     devices = pick_devices(detect(), wanted)
     if not devices:
-        raise ValueError("no NVIDIA GPU found on this PC")
+        raise ValueError("no GPU found on this PC: a PC without one can be the main PC, and use other PCs' cards")
     if exe is None:
         exe = find_rpc_server(install())
         if exe is None:
@@ -336,6 +423,9 @@ def start(host: str, port: int, wanted: list[str] | None, cache: bool,
         if tailnet is not None and tailnet() is not None:
             log("through Tailscale, PCs signed in with this PC's account find them too and are let in "
                 "without asking (--ask-tailscale asks about them as well)")
+        if trust_lan is not None:
+            log("main PCs on the same LAN are let in without asking when Windows treats that network as private "
+                "(home); type deny <address> here to refuse one")
     else:
         log("give the main PC these GPUs (save them as a file and pass it with --remote FILE):")
         out.write(json.dumps({"gpus": entries}, indent=2) + "\n")
@@ -346,20 +436,61 @@ def start(host: str, port: int, wanted: list[str] | None, cache: bool,
             return gate_allows(peer, nets)
         return allow_any or is_loopback(host)
 
-    def admit(address: str) -> None:
+    # This PC's own network addresses: its app's search for PCs reaches its own worker too.
+    own_addresses = set(local_ipv4()) if lan else set()
+    lan_trusted: set[str] = set()  # let in by --trust-lan for this run: taken out when the network stops being home
+
+    def open_to(address: str) -> None:
         net = parse_allowed([address])[0]
         if net not in nets:
             nets.append(net)
+
+    def shut_out(address: str) -> None:
+        net = parse_allowed([address])[0]
+        while net in nets:
+            nets.remove(net)
+
+    def admit(address: str) -> None:
+        open_to(address)
+        denied.discard(address)
         save_approved(load_approved(approved_path) + [address], approved_path)
+
+    def refuse(address: str) -> None:
+        shut_out(address)
+        lan_trusted.discard(address)
+        denied.add(address)
+        save_denied(address, approved_path)
+
+    def network_changed() -> None:
+        for address in sorted(lan_trusted):
+            if trust_lan is not None and trust_lan.find(address) is None:
+                lan_trusted.discard(address)
+                shut_out(address)
+                log(f"PC at {address} is no longer on a private network of this PC; it is not let in any more")
 
     approvals = None
     if nets is not None:
         # Read what is typed in this window (a pipe works too, for scripts).
         if stdin is not None or sys.stdin is not None:
-            approvals = Approvals(admit, log)
+            approvals = Approvals(admit, log, refuse)
             threading.Thread(target=approvals.read, args=(stdin or sys.stdin,), daemon=True).start()
 
     def on_request(address: str, name: str) -> bool:
+        if address in own_addresses:
+            # This PC's own app looking for PCs to use: it uses these GPUs directly, not through here.
+            return False
+        if address in denied:
+            log(f"PC {name!r} at {address} was refused here before and is not let in "
+                f"(type allow {address} to let it in)")
+            return False
+        if lan and trust_lan is not None:
+            home = trust_lan.find(address, wait=5.0)
+            if home is not None:
+                open_to(address)
+                lan_trusted.add(address)
+                log(f"PC {name!r} at {address} is on this PC's home network '{home.name}' ({home.alias}), "
+                    f"which Windows treats as private; it may use these GPUs (type deny {address} to refuse it)")
+                return False
         if lan and tailnet is not None and tailscale.is_tailnet_address(address):
             mine = tailscale.own_pc(address, tailnet())
             if mine is not None:
@@ -388,14 +519,19 @@ def start(host: str, port: int, wanted: list[str] | None, cache: bool,
         else:
             inner = free_port()
             argv = server_command(exe, "127.0.0.1", inner, devices, cache)
-            closers.append(Gate((host, port), ("127.0.0.1", inner), nets, log).start())
+            closers.append(Gate((host, port), ("127.0.0.1", inner), nets, log, announce=True).start())
+            if lan and trust_lan is not None:
+                trust_lan.on_change = network_changed
+                closers.append(trust_lan.start())
             let_in = ", ".join(str(n) for n in nets) or "no one yet"
             log(f"gate on {host}:{port} lets in {let_in}; the RPC server listens on 127.0.0.1:{inner}")
         try:
             # Asked later, the cards may have less room than now: read them again for each main PC.
             live = LiveEntries(devices, lambda: pick_devices(detect(), wanted), entries_of, log)
+            # A main PC's monitor also asks how the lent cards are doing (temperature, clocks, load).
+            cards = LiveCards(devices, read_cards)
             closers.append(Responder((host, discovery_port(port)), socket.gethostname(), port, live,
-                                     nets is not None, allowed, on_request, log).start())
+                                     nets is not None, allowed, on_request, log, cards=cards).start())
         except OSError as e:
             log(f"note: main PCs cannot find this worker by themselves ({e}); give them --remote instead")
         others = {}

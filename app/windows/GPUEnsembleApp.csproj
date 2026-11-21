@@ -14,7 +14,7 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <Deterministic>true</Deterministic>
     <DebugType>none</DebugType>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <Product>GPUEnsemble</Product>
     <Copyright>GPUEnsemble contributors, MIT License</Copyright>
   </PropertyGroup>

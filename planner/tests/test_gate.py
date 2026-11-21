@@ -82,6 +82,28 @@ class GateTest(unittest.TestCase):
                 self.assertEqual(recv_exactly(c, 40), b"x" * 40)
         self.assertEqual(g.refused, 0)
 
+    def test_says_when_a_pc_starts_and_stops_using_the_gpus(self) -> None:
+        g = Gate(("127.0.0.1", 0), self.echo.address, parse_allowed(["127.0.0.1"]), self.logs.append,
+                 announce=True).start()
+        self.addCleanup(g.close)
+
+        def said(text: str) -> int:
+            return sum(text in line for line in self.logs)
+        first = socket.create_connection(g.address, timeout=10)
+        second = socket.create_connection(g.address, timeout=10)
+        for c in (first, second):
+            c.sendall(b"hi")
+            self.assertEqual(recv_exactly(c, 2), b"hi")
+        self.assertEqual(said("the PC at 127.0.0.1 is using these GPUs"), 1)  # once for both connections
+        first.close()
+        second.close()
+        for _ in range(200):
+            if said("is done with these GPUs"):
+                break
+            threading.Event().wait(0.01)
+        self.assertEqual(said("the PC at 127.0.0.1 is done with these GPUs"), 1)
+        self.assertEqual(g.users, {})
+
     def test_other_clients_are_turned_away(self) -> None:
         g = self.gate(["10.0.0.0/8", "192.168.10.1"])
         with socket.create_connection(g.address, timeout=10) as c:

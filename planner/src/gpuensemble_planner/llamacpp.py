@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from .childproc import spawn
 from .devices import Device
 from .model import ModelProfile
-from .plan import Plan, streams_cpu_weights
+from .plan import BATCH_FOR_LARGER_UBATCH, MOE_OFFLOAD_MIN_BATCH, UBATCH, Plan, streams_cpu_weights
 
 ALL_LAYERS = 999
 
@@ -148,7 +148,12 @@ def llama_command(
     # --rpc first: llama.cpp reads the arguments in order, and --list-devices
     # added after it then shows the remote cards too.
     args = ["--rpc", ",".join(servers)] if servers else []
-    args += ["-ngl", str(ngl), "-sm", "layer", "-dev", sep.join(names)]
+    if names:
+        args += ["-ngl", str(ngl), "-sm", "layer", "-dev", sep.join(names)]
+    else:
+        # Every layer on the CPU (no GPU here or anywhere): a GPU build would still take a card for
+        # prompts (op offload), so tell it there is none.
+        args += ["-ngl", "0", "-dev", "none"]
     if len(stages) > 1:
         counts = [s.n_layers for s in stages]
         counts[-1] += 1
@@ -165,14 +170,19 @@ def llama_command(
     if threads and (plan.cpu_layers or (model.is_moe and plan.mode == "moe")):
         args += ["-t", str(threads)]
 
+    if plan.ubatch > UBATCH:
+        # Longer prompt chunks: the copy of the CPU's weights to the GPU is shared by more tokens.
+        args += ["-b", str(BATCH_FOR_LARGER_UBATCH), "-ub", str(plan.ubatch)]
+
     notes: list[str] = []
     cpu_experts = _expert_layers_on_cpu(model, plan) if model.is_moe else []
     if cpu_experts:
         args += ["-ot", f"{_layer_regex(cpu_experts)}=CPU"]
-    if (cpu_experts or plan.cpu_layers) and not streams_cpu_weights(plan, model):
+    if (cpu_experts or plan.cpu_layers) and not streams_cpu_weights(plan, model, devices):
         # Compute CPU-resident experts on the CPU during prompts too, instead of
         # copying them to the first GPU for every batch (phase 1a: pp 2.6x).
         args += ["-nopo", "1"] if tool == "bench" else ["--no-op-offload"]
+    if cpu_experts:
         gpu_moe = [i for s in stages for i in range(s.first_layer, s.last_layer + 1) if i not in cpu_experts]
         notes.append(f"experts of {len(cpu_experts)} layers run on the CPU; {len(gpu_moe)} layers keep them on a GPU")
     if tool == "server" and ram_bytes and model.total_weight_bytes > ram_bytes:
@@ -184,7 +194,11 @@ def llama_command(
         # 7.8-8.0 from the first request, at the cost of a ~5 min load.
         args += ["-lm", "none", "--no-host"]
         notes.append("the model is read into RAM instead of memory-mapped; loading takes several minutes")
-    return LlamaCommand(args=args, env={"CUDA_DEVICE_ORDER": "PCI_BUS_ID"}, cpu_expert_layers=cpu_experts, notes=notes,
+    env = {"CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
+    if cpu_experts and plan.ubatch > UBATCH and streams_cpu_weights(plan, model, devices):
+        # Short prompts stay on the CPU: copying their experts to the GPU takes longer than computing them.
+        env["GGML_OP_OFFLOAD_MIN_BATCH"] = str(MOE_OFFLOAD_MIN_BATCH)
+    return LlamaCommand(args=args, env=env, cpu_expert_layers=cpu_experts, notes=notes,
                         rpc_servers=servers)
 
 
@@ -366,7 +380,8 @@ def run(exe: str, command: LlamaCommand, model_path: str, extra: list[str] | Non
 
     env = dict(os.environ, **command.env, **cuda_cache_env())
     argv = [exe, "-m", model_path, *command.args, *(extra or [])]
-    server = "llama-server" in os.path.basename(exe).lower()
+    # gpue-server (GPUEnsemble's own engine) takes the same -m/--host/--port and answers the same /health
+    server = any(name in os.path.basename(exe).lower() for name in ("llama-server", "gpue-server"))
     log = log or LineLog()
     if server:
         proc, guard = spawn(argv, env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

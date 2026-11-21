@@ -36,7 +36,7 @@ SCRIPT = r"""
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $ErrorActionPreference = 'SilentlyContinue'
 Get-NetConnectionProfile | ForEach-Object { "net`t$($_.InterfaceAlias)`t$($_.Name)`t$($_.NetworkCategory)" }
-Get-NetIPAddress | ForEach-Object { "addr`t$($_.InterfaceAlias)`t$($_.IPAddress)" }
+Get-NetIPAddress | ForEach-Object { "addr`t$($_.InterfaceAlias)`t$($_.IPAddress)`t$($_.PrefixLength)" }
 $exe = $env:GPUENSEMBLE_FIREWALL_PROGRAM
 try {
   $policy = New-Object -ComObject HNetCfg.FwPolicy2 -ErrorAction Stop
@@ -63,6 +63,7 @@ class Network:
     name: str  # the network, e.g. Network 2
     profile: str  # public, private or domain
     addresses: list[str] = field(default_factory=list)  # this PC's addresses on it
+    subnets: list = field(default_factory=list)  # the networks those addresses are in (ipaddress networks)
 
 
 @dataclass
@@ -74,13 +75,19 @@ class Rule:
 
 def parse(lines: list[str]) -> tuple[list[Network], list[Rule] | None]:
     """The networks, and this Python's inbound rules (None when they could not be read)."""
-    networks, rules, read, addresses = [], [], False, {}
+    networks, rules, read, addresses, subnets = [], [], False, {}, {}
     for line in lines:
         parts = line.rstrip("\r\n").split("\t")
         if parts[0] == "net" and len(parts) == 4 and parts[3] in CATEGORY_PROFILE:
             networks.append(Network(parts[1], parts[2], CATEGORY_PROFILE[parts[3]]))
-        elif parts[0] == "addr" and len(parts) == 3:
+        elif parts[0] == "addr" and len(parts) in (3, 4):
             addresses.setdefault(parts[1], []).append(parts[2])
+            if len(parts) == 4:
+                try:
+                    subnets.setdefault(parts[1], []).append(
+                        ipaddress.ip_network(f"{parts[2].split('%')[0]}/{int(parts[3])}", strict=False))
+                except ValueError:
+                    pass
         elif parts[0] == "rule" and len(parts) == 4:
             try:
                 bits = int(parts[2])
@@ -91,6 +98,7 @@ def parse(lines: list[str]) -> tuple[list[Network], list[Rule] | None]:
             read = True
     for net in networks:
         net.addresses = addresses.get(net.alias, [])
+        net.subnets = subnets.get(net.alias, [])
     return networks, rules if read else None
 
 
@@ -157,6 +165,15 @@ def _powershell(program: str, timeout: float = 30.0) -> list[str]:
     except (OSError, subprocess.SubprocessError):
         return []
     return out.stdout.decode("utf-8", errors="replace").splitlines()
+
+
+def read_networks(read: Callable[[str], list[str]] | None = None, exe: str | None = None) -> list[Network]:
+    """This PC's networks with their profiles and subnets; [] where it cannot tell (not Windows)."""
+    if read is None:
+        if sys.platform != "win32":
+            return []
+        read = _powershell
+    return parse(read(exe or program()))[0]
 
 
 def program() -> str:

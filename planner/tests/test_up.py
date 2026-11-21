@@ -166,6 +166,26 @@ class UpTest(UpCase):
         code, err = self.up("--model", "qwen3-32b")
         self.assertNotIn("--cache-ram", cli.run.call_args.args[3])
 
+    def test_chats_are_not_kept_in_ram_when_the_model_nearly_fills_it(self) -> None:
+        # Saving a finished chat would push the weights out of RAM: 9-32 s before the next first token (measured).
+        code, err = self.up("--model", "qwen3-32b", "--ram-gib", "12")  # 19 GiB of cards: 3 GiB of layers stay in RAM
+        self.assertEqual(code, 0, err)
+        self.assertEqual(cli.run.call_args.args[3][-3:], ["--cache-ram", "0", "--metrics"])
+        self.assertIn("the model leaves too little RAM free", err)
+        # The user's own choice stands.
+        code, err = self.up("--model", "qwen3-32b", "--ram-gib", "12", "--", "--cache-ram", "2048")
+        self.assertEqual(cli.run.call_args.args[3][-2:], ["--cache-ram", "2048"])
+        self.assertNotIn("--cache-ram 0", err)
+        # With room for the cache beside the weights, the server's default stays.
+        code, err = self.up("--model", "qwen3-32b", "--ram-gib", "24")
+        self.assertNotIn("--cache-ram", cli.run.call_args.args[3])
+
+    def test_chat_cache_rule(self) -> None:
+        host = mock.Mock(ram_bytes=64 * cli.GIB)
+        self.assertTrue(cli._chat_cache_crowds_ram(mock.Mock(cpu_bytes=51 * cli.GIB), host))
+        self.assertFalse(cli._chat_cache_crowds_ram(mock.Mock(cpu_bytes=40 * cli.GIB), host))
+        self.assertFalse(cli._chat_cache_crowds_ram(mock.Mock(cpu_bytes=0), mock.Mock(ram_bytes=8 * cli.GIB)))  # all on the cards
+
     def test_waits_for_a_worker_only_at_a_console(self) -> None:
         local = ["--model", "C:/models/Qwen3-32B-Q4_K_M.gguf", "--exe", "llama-server", "--remote", "auto"]
         for yes, tty, wait in ((False, True, cli.APPROVAL_WAIT), (True, True, 0.0), (False, False, 0.0)):
@@ -275,6 +295,20 @@ class ThereTest(UpCase):
         ready = [line for line in err.splitlines() if line.startswith("ready: ")]
         self.assertEqual(len(ready), 1, err)
         self.assertIn("http://127.0.0.1:8080/v1 (the model runs on the PC at 100.64.0.2", ready[0])
+
+    def test_the_monitor_sees_a_model_that_runs_there(self) -> None:
+        seen = []
+        self.session = FakeSession(wait=lambda: seen.append(cli.monitor.read_run()))
+        with mock.patch.object(cli.monitor, "read_metrics", return_value=None):
+            code, err = self.up("--model", "qwen3-32b", "--remote", self.serves)
+        self.assertEqual(code, 0, err)
+        [run] = seen
+        self.assertEqual((run["model"], run["host"], run["port"]), ("qwen3-32b", "127.0.0.1", 8080))
+        self.assertEqual(run["cpu_layers"], 0)
+        [stage] = [s for s in run["stages"] if s["first"] is not None]
+        self.assertEqual((stage["here"], stage["rpc"], stage["llama_device"]), (False, "100.64.0.2:50052", "CUDA0"))
+        self.assertIn("ready", run)  # the other PC warmed it up: the speed counts from the start
+        self.assertIsNone(cli.monitor.read_run())  # gone once it stops
 
     def test_the_port_and_address_asked_for(self) -> None:
         self.session = FakeSession(port=50064, code=3)

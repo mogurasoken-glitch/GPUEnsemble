@@ -267,6 +267,95 @@ class RunFileTest(unittest.TestCase):
         self.assertEqual(monitor.read_run(self.path, alive=lambda pid: True)["warm"][monitor.TOKENS], 0.0)
 
 
+# The 4090's worker answers the monitor's question (discovery.ask_cards) with its card's nvidia-smi reading.
+FAR = {"index": 0, "name": "NVIDIA GeForce RTX 4090", "used_gib": 21.4, "total_gib": 24.0, "temp_c": 66,
+       "load": 88, "clock_mhz": 2520, "max_clock_mhz": 3120, "power_w": 310.0, "pstate": "P2"}
+
+
+class OtherPcTest(unittest.TestCase):
+    def run_info(self) -> dict:
+        return ready(monitor.run_info(plan(), DEVICES, "llama-3.3-70b", "127.0.0.1", 8080), warm={})
+
+    def test_stages_name_the_worker_and_its_card(self) -> None:
+        info = self.run_info()
+        far = info["stages"][2]
+        self.assertEqual((far["rpc"], far["llama_device"], far["index"]), ("100.64.0.2:50052", "CUDA0", None))
+        self.assertEqual([s["rpc"] for s in info["stages"][:2]], [None, None])
+        self.assertEqual(monitor.remote_endpoints(info), ["100.64.0.2:50052"])
+        self.assertEqual(monitor.remote_endpoints(None), [])
+
+    def test_a_card_of_another_pc_is_matched_to_its_stage(self) -> None:
+        run = self.run_info()
+        rates = monitor.Rates()
+        metrics = monitor.parse_metrics(METRICS)
+        rates.update(metrics, run)
+        far = dict(FAR, rpc="100.64.0.2:50052", pc="PC4090")
+        snap = monitor.snapshot(run, monitor.parse_gpus(SMI) + [far], metrics, rates)
+        ti, sup, rtx = snap["gpus"]
+        # GPU0 of this PC (the Ti) and GPU0 of the other PC are told apart by the worker's address.
+        self.assertEqual((ti["layers"], ti["here"], ti["rpc"]), ("18-63", True, None))
+        self.assertEqual((rtx["layers"], rtx["here"], rtx["pc"], rtx["temp_c"]), ("64-79", False, "PC4090", 66))
+        self.assertEqual(snap["stages"][2]["rpc"], "100.64.0.2:50052")
+        self.assertIn("GPU0 NVIDIA GeForce RTX 4090 (other PC PC4090): 21.4/24.0 GiB, 66 C, load 88%",
+                      monitor.format_text(snap))
+        json.dumps(snap)
+
+    def test_a_slowed_down_card_on_another_pc_is_named_with_its_pc(self) -> None:
+        run = self.run_info()
+        run["stages"][2]["seconds"] = 0.040  # a large share of the time: its clocks count
+        rates = monitor.Rates()
+        far = dict(FAR, pstate="P5", clock_mhz=600, rpc="100.64.0.2:50052", pc="PC4090")
+        snap = monitor.snapshot(run, [far], {monitor.PROCESSING: 1}, rates)
+        self.assertTrue(snap["gpus"][0]["clock_down"])
+        self.assertTrue(any(n.startswith("NVIDIA GeForce RTX 4090 on PC4090 is in P5") for n in snap["notes"]))
+
+    def test_remote_cards_asks_the_workers_and_lets_a_silent_one_be(self) -> None:
+        now = [100.0]
+        asked = []
+        answers = {"100.64.0.2:50052": ("PC4090", [FAR, {"name": "no index"}])}
+
+        def ask(endpoints, timeout):
+            asked.append(list(endpoints))
+            return {e: answers[e] for e in endpoints if e in answers}
+
+        remote = monitor.RemoteCards(ask, clock=lambda: now[0])
+        both = ["100.64.0.2:50052", "100.64.0.3:50052"]
+        cards, notes = remote.read(both)
+        self.assertEqual([(c["pc"], c["rpc"], c["index"]) for c in cards], [("PC4090", "100.64.0.2:50052", 0)])
+        self.assertEqual(len(notes), 1)
+        self.assertIn("the PC at 100.64.0.3 did not tell how its cards are doing", notes[0])
+        now[0] += 2
+        cards, notes = remote.read(both)  # the silent one is not asked again for a while, the note stays
+        self.assertEqual(asked[-1], ["100.64.0.2:50052"])
+        self.assertEqual(len(notes), 1)
+        now[0] += monitor.REMOTE_RETRY
+        remote.read(both)
+        self.assertEqual(asked[-1], both)
+
+    def test_watch_adds_the_cards_of_other_pcs(self) -> None:
+        out = []
+        info = self.run_info()
+
+        class Remote:
+            def read(self, endpoints):
+                return [dict(FAR, rpc=endpoints[0], pc="PC4090")], []
+
+        monitor.watch(1.0, 1, out.append, read_run_=lambda: info, read_gpus_=lambda: monitor.parse_gpus(SMI),
+                      read_metrics_=lambda h, p: None, remote_=Remote())
+        self.assertEqual([g["here"] for g in out[0]["gpus"]], [True, True, False])
+        self.assertEqual(out[0]["gpus"][2]["layers"], "64-79")
+
+    def test_no_model_asks_no_other_pc(self) -> None:
+        class Remote:
+            def read(self, endpoints):
+                raise AssertionError("asked")
+
+        out = []
+        monitor.watch(1.0, 1, out.append, read_run_=lambda: None, read_gpus_=lambda: [],
+                      read_metrics_=lambda h, p: None, remote_=Remote())
+        self.assertFalse(out[0]["running"])
+
+
 class CommandTest(unittest.TestCase):
     def test_json_once(self) -> None:
         import contextlib
@@ -314,6 +403,70 @@ class WatchTest(unittest.TestCase):
         monitor.watch(1.0, 1, out.append, read_run_=lambda: None, read_gpus_=lambda: [],
                       read_metrics_=lambda h, p: self.fail("asked"))
         self.assertFalse(out[0]["running"])
+
+
+
+
+class OwnEngineTest(unittest.TestCase):
+    """`up --engine own`: the cards hold the layers in turn, and nothing estimates the speed."""
+
+    def info(self, context: int = 12288) -> dict:
+        from gpuensemble_planner.devices import load_rig
+        from gpuensemble_planner.model import ModelProfile
+        from gpuensemble_planner.ownengine import engine_placement
+        examples = os.path.join(os.path.dirname(__file__), "..", "examples")
+        devs, _ = load_rig(os.path.join(examples, "rig-e5-turing.json"))
+        model = ModelProfile.from_json_file(os.path.join(examples, "gpt-oss-120b.json"))
+        return ready(monitor.run_info_own(engine_placement(model, devs, context), devs, "gpt-oss-120b", "0.0.0.0", 8080))
+
+    def gpus(self, ti: str, sup: str) -> list[dict]:
+        cards = monitor.parse_gpus(SMI)
+        cards[0]["pstate"], cards[1]["pstate"] = ti, sup
+        return cards
+
+    def snap(self, ti: str = "P3", sup: str = "P8", context: int = 12288) -> dict:
+        return monitor.snapshot(self.info(context), self.gpus(ti, sup), {monitor.PROCESSING: 1}, monitor.Rates())
+
+    def test_the_stages_are_the_engines(self) -> None:
+        snap = self.snap()
+        self.assertEqual(snap["engine"], "own")
+        self.assertEqual(snap["api"], "http://127.0.0.1:8080/v1")
+        self.assertIsNone(snap["estimate"])
+        self.assertIsNone(snap["slowest"])
+        self.assertIsNone(snap["cpu"])
+        self.assertEqual([(s["index"], s["first"], s["last"], s["count"], s["ram_experts"], s["share"]) for s in snap["stages"]],
+                         [(1, 0, 34, 18, 16, None), (0, 1, 35, 18, 15, None)])
+        self.assertEqual([g["layers"] for g in snap["gpus"]], ["1-35 in turn (18)", "0-34 in turn (18)"])
+        json.dumps(snap)
+
+    def test_the_text(self) -> None:
+        text = monitor.format_text(self.snap())
+        self.assertIn("(GPUEnsemble's own engine, no estimate)", text)
+        self.assertIn("  RTX 2080 SUPER 8GB: layers 0-34 in turn (18), experts of 16 of them in RAM\n", text)
+        self.assertIn("  RTX 2080 Ti 11GB: layers 1-35 in turn (18), experts of 15 of them in RAM\n", text)
+        self.assertNotIn("ms per token", text)
+        self.assertNotIn("slowest", text)
+
+    def test_p3_is_how_the_engine_generates(self) -> None:
+        snap = self.snap(ti="P3", sup="P8")
+        self.assertEqual([g["clock_down"] for g in snap["gpus"]], [False, False])
+        self.assertEqual(snap["notes"], [])
+
+    def test_the_card_that_computes_the_attention_in_p5_is_clocked_down(self) -> None:
+        snap = self.snap(ti="P5", sup="P8")
+        self.assertEqual([g["clock_down"] for g in snap["gpus"]], [True, False])
+        self.assertIn("NVIDIA GeForce RTX 2080 Ti is in P5", snap["notes"][0])
+
+    def test_without_the_copies_every_card_counts(self) -> None:
+        snap = self.snap(ti="P5", sup="P5", context=16384)
+        self.assertEqual([g["clock_down"] for g in snap["gpus"]], [True, True])
+
+    def test_llama_cpp_runs_say_so(self) -> None:
+        info = ready(monitor.run_info(plan(), DEVICES, "m", "127.0.0.1", 8080))
+        snap = monitor.snapshot(info, monitor.parse_gpus(SMI), None, monitor.Rates())
+        self.assertEqual(snap["engine"], "llama.cpp")
+        self.assertEqual([g["layers"] for g in snap["gpus"]], ["18-63", "0-17"])
+        self.assertIsNone(monitor.snapshot(None, [], None, monitor.Rates())["engine"])
 
 
 if __name__ == "__main__":

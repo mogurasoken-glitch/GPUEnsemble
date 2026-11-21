@@ -93,8 +93,11 @@ def _placement(c: Candidate) -> str:
         return "does not fit"
     p = c.plan.on_other_pc if c.there else c.plan  # the plan that will run
     gpus = sum(1 for s in p.stages if s.n_layers)
-    parts = [f"{gpus} GPU" + ("s" if gpus > 1 else "")]
-    if p.cpu_layers:
+    if gpus == 0:
+        parts = ["CPU only"]
+    else:
+        parts = [f"{gpus} GPU" + ("s" if gpus > 1 else "")]
+    if p.cpu_layers and gpus:
         parts.append(f"{p.cpu_layers} layers on CPU")
     if p.mode == "moe":
         on_gpu = sum(s.expert_fraction_on_gpu * s.n_layers for s in p.stages)

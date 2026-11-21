@@ -39,6 +39,28 @@ namespace GPUEnsembleApp
         readonly Timer refreshLater = new Timer { Interval = 300 };
         bool told, exiting;
 
+        /// <summary>What this PC does (<see cref="Settings.Role"/>): auto, main or lend; "" until the user chooses.</summary>
+        string role = Settings.Role ?? "";
+        /// <summary>Whether this PC lends its GPUs when no model runs here: only once the user chose Auto or Lend.</summary>
+        bool Lends => role == "auto" || role == "lend";
+        /// <summary>A model to start once the lending has stopped (auto role): its id, or "" for the recommended one.</summary>
+        string? afterLending;
+        /// <summary>The Start button was pressed while another PC used this PC's GPUs.</summary>
+        bool heldBack;
+        readonly Timer later = new Timer { Interval = 1500 };
+        Action? laterAction;
+        /// <summary>Looks for new PCs now and then while nothing runs and the window is open.</summary>
+        readonly Timer lookAgain = new Timer { Interval = 120_000 };
+
+        /// <summary>With <c>--tray</c> (Windows' start at sign-in) the window stays hidden; the icon opens it.</summary>
+        public bool StartHidden { get; set; }
+        bool started;
+
+        /// <summary>This PC only lends its GPUs (the user chose so): it runs no model and asks no other PC.</summary>
+        bool LendOnly => worker.Running && role == "lend";
+        /// <summary>The GPUs are kept for other PCs: lending only, or another PC uses them now.</summary>
+        bool Held => LendOnly || worker.InUse;
+
         /// <summary>
         /// With <c>--capture FOLDER</c> the app saves a picture of each page there once it has read the state,
         /// then exits: for checking the look on a PC nobody is watching.
@@ -77,7 +99,7 @@ namespace GPUEnsembleApp
 
             nav.Dock = DockStyle.Left;
             nav.Width = Px(220);
-            nav.BackColor = Surface;
+            nav.BackColor = Ui.Theme.Chrome;
             nav.FlowDirection = FlowDirection.TopDown;
             nav.WrapContents = false;
             nav.Padding = new Padding(Px(14), Px(20), Px(14), Px(14));
@@ -99,8 +121,8 @@ namespace GPUEnsembleApp
             nav.Controls.Add(new Label { Text = "GPUEnsemble " + Version(), Font = Small, ForeColor = Muted, AutoSize = true,
                                          Margin = new Padding(Px(14), Px(6), 0, 0), UseMnemonic = false });
 
-            var header = new Panel { Dock = DockStyle.Top, Height = Px(56), BackColor = Surface, Padding = new Padding(Px(22), 0, Px(22), 0) };
-            var brand = new FlowLayoutPanel { Dock = DockStyle.Left, AutoSize = true, WrapContents = false, BackColor = Surface, Padding = new Padding(0, Px(16), 0, 0) };
+            var header = new Panel { Dock = DockStyle.Top, Height = Px(56), BackColor = Ui.Theme.Chrome, Padding = new Padding(Px(22), 0, Px(22), 0) };
+            var brand = new FlowLayoutPanel { Dock = DockStyle.Left, AutoSize = true, WrapContents = false, BackColor = Ui.Theme.Chrome, Padding = new Padding(0, Px(16), 0, 0) };
             brand.Controls.Add(new Logo());
             var name = new Label { Text = "GPUEnsemble", Font = Brand, ForeColor = Ink, AutoSize = true, Margin = new Padding(0, Px(-2), 0, 0), UseMnemonic = false };
             brand.Controls.Add(name);
@@ -129,6 +151,8 @@ namespace GPUEnsembleApp
             logBox.ForeColor = Ink;
             logBox.BorderStyle = BorderStyle.None;
             logBox.Dock = DockStyle.Fill;
+            DarkScrollBars(logBox);
+            DarkScrollBars(content);
 
             trayChat = new ToolStripMenuItem("", null, (s, e) => OpenChat());
             trayStartStop = new ToolStripMenuItem("", null, (s, e) => { if (server.Running) server.Stop(); else StartServer(null); });
@@ -170,7 +194,58 @@ namespace GPUEnsembleApp
             monitor.Updated += () => OnUi(() => { if (page != Page.Log) foreach (var update in live.ToArray()) update(); });
             captureTimer.Tick += (s, e) => CaptureWhenRunning();
 
-            Load += (s, e) => { Show(Page.Home); ReadState(); UpdateCatalog(); };
+            worker.Changed += () => OnUi(() =>
+            {
+                // Auto role: the lending stopped so that a model can run here.
+                if (!worker.Running && afterLending != null)
+                {
+                    var id = afterLending.Length > 0 ? afterLending : null;
+                    afterLending = null;
+                    Later(() => { if (!server.Running && !worker.Running && !exiting) StartServer(id); });
+                }
+            });
+            server.Changed += () => OnUi(() =>
+            {
+                // Auto role: when the model here ends, the GPUs are lent again.
+                if (!server.Running && Lends && !exiting && CaptureTo == null && Engine.StateFile == null)
+                    Later(() => { if (!server.Running && !worker.Running && Lends && !exiting) worker.Start(); });
+            });
+            later.Tick += (s, e) => { later.Stop(); var a = laterAction; laterAction = null; a?.Invoke(); };
+            lookAgain.Tick += (s, e) => { if (Visible && !server.Running && !LendOnly && pull?.Running != true) ReadState(); };
+            Load += (s, e) => Startup();
+        }
+
+        /// <summary>Once, when the window first shows or (with --tray) when the app starts hidden.</summary>
+        void Startup()
+        {
+            if (started) return;
+            started = true;
+            Show(Page.Home);
+            // Auto or lend: lend the GPUs from the start, so that other PCs find this one without anyone pressing a button.
+            if (Lends && CaptureTo == null && StartModel == null && Engine.StateFile == null) worker.Start();
+            ReadState();
+            UpdateCatalog();
+            lookAgain.Start();
+        }
+
+        protected override void SetVisibleCore(bool value)
+        {
+            if (StartHidden && !started && value)
+            {
+                // Hidden at the start: the window is made (for the icon's menu and the pages) but not shown.
+                if (!IsHandleCreated) CreateHandle();
+                value = false;
+                BeginInvoke(new Action(Startup));
+            }
+            base.SetVisibleCore(value);
+        }
+
+        /// <summary>Runs <paramref name="action"/> in a moment: a stopped program needs that long to give its GPUs back.</summary>
+        void Later(Action action)
+        {
+            laterAction = action;
+            later.Stop();
+            later.Start();
         }
 
         static Icon LoadIcon()
@@ -338,14 +413,15 @@ namespace GPUEnsembleApp
                                         "Enter a GGUF repository on Hugging Face (owner/name, e.g. JonathanColetti/Qwen3.8-27B-Uncensored-GGUF), or a link to its page or to one of its files. " +
                                         "A file link takes that quantization; a repository alone takes Q4_K_M. Only this PC's list gets it, and it is not a checked model."),
                                       Px(520), Small, Muted));
-                var box = new TextBox { Width = Px(520), Font = Body, Margin = new Padding(0, Px(8), 0, Px(10)) };
+                var box = new TextBox { Width = Px(520), Font = Body, Margin = new Padding(0, Px(8), 0, Px(10)), BackColor = Ui.Theme.Ground, ForeColor = Ink };
                 col.Controls.Add(box);
-                var ok = new System.Windows.Forms.Button { Text = T("追加", "Add"), DialogResult = DialogResult.OK, AutoSize = true };
-                var cancel = new System.Windows.Forms.Button { Text = T("やめる", "Cancel"), DialogResult = DialogResult.Cancel, AutoSize = true };
+                var ok = DialogButton(T("追加", "Add"), DialogResult.OK);
+                var cancel = DialogButton(T("やめる", "Cancel"), DialogResult.Cancel);
                 col.Controls.Add(Row(ok, cancel));
                 f.Controls.Add(col);
                 f.AcceptButton = ok;
                 f.CancelButton = cancel;
+                f.HandleCreated += (s2, e2) => DarkTitleBar(f);
                 if (f.ShowDialog(this) != DialogResult.OK) return;
                 source = box.Text.Trim();
             }
@@ -362,6 +438,15 @@ namespace GPUEnsembleApp
             MessageBox.Show(this, (r.Ok ? T("一覧に追加しました。", "Added to the list.") : T("追加できませんでした。", "Could not add it.")) +
                                   "\n\n" + r.Output.Trim(),
                 "GPUEnsemble", MessageBoxButtons.OK, r.Ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        }
+
+        /// <summary>A plain dialog button in the theme's colors (a system button would stay light on a dark theme).</summary>
+        static System.Windows.Forms.Button DialogButton(string text, DialogResult result)
+        {
+            var b = new System.Windows.Forms.Button { Text = text, DialogResult = result, AutoSize = true, FlatStyle = FlatStyle.Flat,
+                                                      BackColor = Ui.Theme.Soft, ForeColor = Ink, Padding = new Padding(Px(8), Px(2), Px(8), Px(2)) };
+            b.FlatAppearance.BorderColor = Line2;
+            return b;
         }
 
         /// <summary>Takes a model the user added off this PC's list (<c>catalog --remove</c>); its downloaded file stays.</summary>
@@ -391,7 +476,7 @@ namespace GPUEnsembleApp
             if (reading) return;
             reading = true;
             if (page != Page.Log) Render();
-            var r = await Engine.ReadState(askOtherPcs: !worker.Running);
+            var r = await Engine.ReadState(askOtherPcs: !LendOnly);
             reading = false;
             if (r.State != null) { state = r.State; readError = ""; }
             else readError = r.Log.Trim();
@@ -489,6 +574,36 @@ namespace GPUEnsembleApp
         static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out RECT value, int size);
         const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
 
+        [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+        static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+        const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+
+        /// <summary>A dark theme gets Windows' dark title bar too (Windows 10 20H1 and later; older ones keep theirs).</summary>
+        public static void DarkTitleBar(Form f)
+        {
+            if (!Ui.Theme.Dark) return;
+            try { var on = 1; DwmSetWindowAttribute(f.Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref on, sizeof(int)); }
+            catch (Exception) { }  // no DWM: the title bar Windows draws
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            DarkTitleBar(this);
+        }
+
+        [System.Runtime.InteropServices.DllImport("uxtheme.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern int SetWindowTheme(IntPtr hwnd, string app, string? idList);
+
+        /// <summary>A dark theme gets Windows' dark scroll bars on a control that scrolls (Windows 10 1809 and later).</summary>
+        static void DarkScrollBars(Control c)
+        {
+            if (!Ui.Theme.Dark) return;
+            void Apply() { try { SetWindowTheme(c.Handle, "DarkMode_Explorer", null); } catch (Exception) { } }
+            if (c.IsHandleCreated) Apply();
+            c.HandleCreated += (s, e) => Apply();
+        }
+
         /// <summary>
         /// The window as drawn on the screen. <see cref="Control.Bounds"/> also holds the resize border Windows 10
         /// keeps invisible, through which a picture of the screen shows what is behind the window.
@@ -506,7 +621,23 @@ namespace GPUEnsembleApp
 
         void StartServer(string? modelId)
         {
-            if (server.Running || worker.Running) return;
+            if (server.Running || afterLending != null) return;
+            if (worker.Running)
+            {
+                if (role == "lend") return;
+                if (worker.InUse)
+                {
+                    // Stopping the lending now would end the model of the PC that uses these GPUs.
+                    heldBack = true;
+                    Show(Page.Home);
+                    return;
+                }
+                afterLending = modelId ?? "";
+                worker.Stop();
+                Show(Page.Home);
+                return;
+            }
+            heldBack = false;
             server.ModelId = modelId;
             server.Start();
             Show(Page.Home);
@@ -554,14 +685,16 @@ namespace GPUEnsembleApp
             string status;
             if (server.State == RunState.Ready) status = T($"{CurrentName()} が動いています", $"{CurrentName()} is running");
             else if (server.Running) status = T("起動しています…", "Starting…");
-            else if (worker.Running) status = T("GPU を貸しています", "Lending GPUs");
+            else if (worker.InUse) status = T("ほかの PC に GPU を貸しています", "Lending GPUs to another PC");
+            else if (worker.Running) status = role == "lend" ? T("GPU を貸せます", "Ready to lend GPUs")
+                : T("止まっています（GPU は貸せます）", "Stopped (GPUs can be lent)");
             else status = T("止まっています", "Stopped");
             trayStatus.Text = status;
             var tip = "GPUEnsemble: " + status;
             tray.Text = tip.Length > 63 ? "GPUEnsemble" : tip;
             trayChat.Enabled = server.State == RunState.Ready;
             trayStartStop.Text = server.Running ? T("モデルを止める", "Stop the model") : T("おすすめのモデルを起動", "Start the recommended model");
-            trayStartStop.Enabled = server.Running || !worker.Running;
+            trayStartStop.Enabled = server.Running || !Held;
         }
 
         /// <summary>The catalog id of the model running or starting, else the recommended one.</summary>
@@ -748,6 +881,7 @@ namespace GPUEnsembleApp
         {
             Heading(col, T("ホーム", "Home"));
             var w = Width0;
+            if (role.Length == 0 && Engine.StateFile == null) RoleQuestion(col, w);
             var card = Card();
             card.MinimumSize = new Size(w, 0);
             card.MaximumSize = new Size(w, 0);
@@ -762,6 +896,10 @@ namespace GPUEnsembleApp
                     card.Controls.Add(Label(CurrentName(), Big));
                     if (model != null) LiveSpeed(card, model);
                     LiveText(card, MonitorText, inner, Body, Ink);
+                    if (server.Boosted)
+                        card.Controls.Add(Label(T("ブースト: オン（GPU のクロックを固定しています）", "Boost: on (the GPUs' clocks are locked)"), Small, Gold));
+                    else if (server.BoostNote.Length > 0)
+                        card.Controls.Add(Wrap(T("ブーストはかかっていません: ", "Boost is not on: ") + server.BoostNote, inner, Small, Muted));
                     card.Controls.Add(Label(T($"チャット: {server.ChatUrl}　API: {server.ChatUrl}v1", $"Chat: {server.ChatUrl}   API: {server.ChatUrl}v1"), Small, Muted));
                     card.Controls.Add(Row(
                         Button(T("チャットを開く", "Open chat"), true, (s, e) => OpenChat()),
@@ -790,10 +928,19 @@ namespace GPUEnsembleApp
                     }
                     else
                         card.Controls.Add(Status(T("止まっています", "Stopped"), Idle));
-                    if (worker.Running)
+                    if (afterLending != null)
+                        card.Controls.Add(Status(T("GPU を貸すのをやめて、起動の準備をしています…", "Stopping the lending to start the model…"), Purple));
+                    else if (LendOnly)
                     {
-                        card.Controls.Add(Wrap(T("この PC は GPU を貸しています。ここでモデルを動かすには、「つながる PC」で貸すのをやめてください。",
-                                                 "This PC lends its GPUs. To run a model here, stop lending on the Other PCs page."), inner, Body, Muted));
+                        card.Controls.Add(Wrap(T("この PC は GPU を貸すだけにしています。ここでモデルを動かすには、「つながる PC」で役割を「自動」か「メイン」にしてください。",
+                                                 "This PC only lends its GPUs. To run a model here, choose Auto or Main on the Other PCs page."), inner, Body, Muted));
+                        card.Controls.Add(Row(Button(T("つながる PC へ", "Other PCs"), false, (s, e) => Show(Page.Link))));
+                    }
+                    else if (worker.InUse)
+                    {
+                        var who = string.Join(", ", worker.Users.Select(worker.NameOf));
+                        card.Controls.Add(Wrap(T($"ほかの PC（{who}）がこの PC の GPU を使っています。その PC がモデルを止めると、ここで起動できます。",
+                                                 $"Another PC ({who}) is using this PC's GPUs. Once it stops its model, you can start one here."), inner, Body, heldBack ? Bad : Muted));
                         card.Controls.Add(Row(Button(T("つながる PC へ", "Other PCs"), false, (s, e) => Show(Page.Link))));
                     }
                     else if (model != null)
@@ -806,6 +953,10 @@ namespace GPUEnsembleApp
                         card.Controls.Add(Row(
                             Button(T("起動", "Start"), true, (s, e) => StartServer(null)),
                             Button(T("ほかのモデルを選ぶ", "Choose another model"), false, (s, e) => Show(Page.Models))));
+                        if (worker.Running)
+                            card.Controls.Add(Wrap(T("使っていない間は、この PC の GPU をほかの PC に貸しています。起動を押すと、貸すのをやめてここで動かします。",
+                                                     "While no model runs here, this PC lends its GPUs to other PCs. Start stops the lending and runs the model here."), inner, Small, Muted));
+                        BoostChoice(card, inner);
                     }
                     else if (state != null)
                         card.Controls.Add(Label(T("この PC で動かせるモデルが見つかりませんでした。", "No model in the catalog fits on this PC."), Body, Muted));
@@ -816,7 +967,7 @@ namespace GPUEnsembleApp
             var stages = Stages(model).ToList();
             var map = new GpuMap(state, stages);
             var parts = Enumerable.Range(0, stages.Count).Where(k => HasLayers(stages[k])).OrderBy(k => State.Num(stages[k], "first")).ToList();
-            if (parts.Count > 0 && !worker.Running)
+            if (parts.Count > 0 && !Held)
             {
                 var split = Label(T("GPU ごとの分担（帯の幅は使うメモリの量）", "Each GPU's share (widths: memory it uses)"), Small, Muted);
                 split.Margin = new Padding(0, Px(16), 0, 0);
@@ -870,7 +1021,8 @@ namespace GPUEnsembleApp
             foreach (var gi in map.Order)
                 gpus.Controls.Add(GpuCard(gpuList[gi], map.Color(gi), useOf.TryGetValue(gi, out var used) ? used : (double?)null, Px(250), showPc: true));
             if (gpus.Controls.Count == 0)
-                gpus.Controls.Add(Label(T("NVIDIA の GPU が見つかりませんでした。", "No NVIDIA GPU was found."), Body, Muted));
+                gpus.Controls.Add(Label(T("GPU が見つかりませんでした。別の PC の GPU を使うか、CPU だけで動かします。",
+                    "No GPU was found. Models use the GPUs of other PCs, or run on the CPU alone."), Body, Muted));
             col.Controls.Add(gpus);
             foreach (var note in state.Notes)
                 col.Controls.Add(Wrap(note, w, Small, Muted));
@@ -958,10 +1110,18 @@ namespace GPUEnsembleApp
         static string SpeedText(double speed) => speed.ToString(speed < 10 ? "0.00" : "0.0");
 
         /// <summary>A card's memory, heat, clock and load now, from the monitor; red when the driver slowed it down.</summary>
-        (string, bool) GpuNow(int index)
+        (string, bool) GpuNow(int index, string? endpoint, string? pc)
         {
-            var g = monitor.Gpu(index);
-            if (g == null) return (T("いまの状態を調べています…", "Reading it…"), false);
+            var g = monitor.Gpu(index, endpoint, pc);
+            if (g == null)
+            {
+                // A card of another PC whose worker does not tell its readings (GPUEnsemble 0.1.0 there), or that holds
+                // no part of the running model: the monitor does not ask about it.
+                if (endpoint != null && monitor.Last != null && State.Flag(monitor.Last, "running"))
+                    return (T("いまの状態はわかりません\n（相手の PC の GPUEnsemble が古いなど）",
+                              "Its readings are not known\n(GPUEnsemble there may be older)"), false);
+                return (T("いまの状態を調べています…", "Reading it…"), false);
+            }
             // Two lines of a fixed shape, so that the cards keep the same height whatever the numbers.
             var text = T($"いま {State.Num(g, "used_gib"):0.0} / {State.Num(g, "total_gib"):0.0} GB ・ {State.Num(g, "temp_c"):0} ℃\n{State.Num(g, "clock_mhz"):0} MHz ・ 負荷 {State.Num(g, "load"):0}%",
                          $"Now {State.Num(g, "used_gib"):0.0} / {State.Num(g, "total_gib"):0.0} GB · {State.Num(g, "temp_c"):0} °C\n{State.Num(g, "clock_mhz"):0} MHz · load {State.Num(g, "load"):0}%");
@@ -971,11 +1131,11 @@ namespace GPUEnsembleApp
             return (text, down || State.Flag(g, "hot"));
         }
 
-        /// <summary>nvidia-smi's number of a card of this PC, from the name the engine gives it ("GPU1 NVIDIA ..."), else -1.</summary>
+        /// <summary>nvidia-smi's number of a card on its own PC, from the name the engine gives it ("GPU1 NVIDIA ..."), else -1.</summary>
         static int GpuIndex(Dictionary<string, object> g)
         {
             var name = State.Str(g, "name");
-            if (!State.Flag(g, "here") || !name.StartsWith("GPU", StringComparison.Ordinal)) return -1;
+            if (!name.StartsWith("GPU", StringComparison.Ordinal)) return -1;
             var end = name.IndexOf(' ');
             return end > 3 && int.TryParse(name.Substring(3, end - 3), out var i) ? i : -1;
         }
@@ -990,7 +1150,7 @@ namespace GPUEnsembleApp
                 c.Controls.Add(Label(State.Flag(g, "here") ? T("この PC", "This PC") : T($"別の PC（{State.Str(g, "pc")}）", $"Other PC ({State.Str(g, "pc")})"), Small, Muted));
             c.Controls.Add(Label(ShortGpu(State.Str(g, "name")), H2));
             var vram = State.Num(g, "vram_gib");
-            if (used.HasValue && !worker.Running)
+            if (used.HasValue && !Held)
             {
                 c.Controls.Add(new Meter(vram > 0 ? used.Value / vram : 0, color, color, cardW - Px(46), 6));
                 c.Controls.Add(Label(showPc ? T($"{used.Value:0.#} / {Gib(vram)} 使用（予定）", $"{used.Value:0.#} / {Gib(vram)} planned")
@@ -999,8 +1159,11 @@ namespace GPUEnsembleApp
             else
                 c.Controls.Add(Label(T($"メモリ {Gib(vram)}", $"{Gib(vram)} of memory"), Small, Muted));
             var index = GpuIndex(g);
-            if (server.State == RunState.Ready && index >= 0)
-                LiveText(c, () => GpuNow(index), cardW - Px(46), Small, Ink);
+            var here = State.Flag(g, "here");
+            var endpoint = here ? null : State.Str(g, "endpoint");
+            var pc = here ? null : State.Str(g, "pc");
+            if (server.State == RunState.Ready && index >= 0 && (here || !string.IsNullOrEmpty(endpoint)))
+                LiveText(c, () => GpuNow(index, endpoint, pc), cardW - Px(46), Small, Ink);
             return c;
         }
 
@@ -1135,13 +1298,13 @@ namespace GPUEnsembleApp
             var free = FreeSpace(folder);
             card.Controls.Add(Label((free != null ? T($"空き {Gib(free.Value)}", $"{Gib(free.Value)} free") : T("フォルダがまだありません（最初のダウンロードで作ります）", "The folder does not exist yet (the first download makes it)"))
                 + (chosen ? "" : T("　・ 既定の場所（このアプリのフォルダの data\\models）", " · the default (data\\models in this app's folder)")), Small, Muted));
-            var busy = server.Running || worker.Running || (pull != null && pull.Running);
+            var busy = server.Running || worker.InUse || afterLending != null || (pull != null && pull.Running);
             var change = Button(T("変更…", "Change…"), false, (s, e) => ChooseModelsFolder());
             change.Enabled = !busy;
             var row = Row(change);
             if (chosen)
             {
-                var reset = Button(T("既定に戻す", "Use the default"), false, (s, e) => { Settings.ModelsDir = null; ReadState(); });
+                var reset = Button(T("既定に戻す", "Use the default"), false, (s, e) => { Settings.ModelsDir = null; RestartLending(); ReadState(); });
                 reset.Enabled = !busy;
                 row.Controls.Add(reset);
             }
@@ -1183,6 +1346,7 @@ namespace GPUEnsembleApp
                 }
                 Settings.ModelsDir = path;
                 AppendLog("[app] models folder: " + path);
+                RestartLending();  // a model this PC runs for another PC comes from that folder too
                 ReadState();
             }
         }
@@ -1238,7 +1402,7 @@ namespace GPUEnsembleApp
             };
             void Head(string t) => table.Controls.Add(Label(t, Small, Muted));
             Head(T("モデル", "Model")); Head(T("速さ（見込み）", "Speed (est.)")); Head(T("大きさ", "Size")); Head("");
-            var busy = server.Running || worker.Running;
+            var busy = server.Running || Held || afterLending != null;
             // "The higher, the better": the models that run here first, each part in the list's order.
             foreach (var m in state.Models.OrderBy(x => State.Flag(x, "fits") ? 0 : 1))
             {
@@ -1319,9 +1483,13 @@ namespace GPUEnsembleApp
             if (!(m.TryGetValue("layout", out var v) && v is Dictionary<string, object> l)) return State.Str(m, "placement");
             var parts = new List<string>();
             var gpus = (int)State.Num(l, "gpus");
-            parts.Add(T($"GPU {gpus} 枚", $"{gpus} GPU{(gpus > 1 ? "s" : "")}"));
             var cpu = (int)State.Num(l, "cpu_layers");
-            if (cpu > 0) parts.Add(T($"{cpu} 層は CPU", $"{cpu} layers on the CPU"));
+            if (gpus == 0) parts.Add(T("GPU なし、CPU だけで動かします", "CPU only, no GPU"));
+            else
+            {
+                parts.Add(T($"GPU {gpus} 枚", $"{gpus} GPU{(gpus > 1 ? "s" : "")}"));
+                if (cpu > 0) parts.Add(T($"{cpu} 層は CPU", $"{cpu} layers on the CPU"));
+            }
             if (l.TryGetValue("experts_on_gpu", out var e) && e != null)
             {
                 var f = State.Num(l, "experts_on_gpu");
@@ -1340,23 +1508,44 @@ namespace GPUEnsembleApp
             var w = Width0;
             var inner = w - Px(48);
 
-            var role = Card();
-            role.MinimumSize = new Size(w, 0);
-            role.MaximumSize = new Size(w, 0);
-            role.Controls.Add(Label(T("この PC の役割", "What this PC does"), H2));
-            role.Controls.Add(Wrap(T("メイン: モデルを動かし、ほかの PC の GPU も使います。GPU を貸す: この PC の GPU をメインの PC に使わせます。",
-                                     "Main: runs the model and uses the GPUs of other PCs too. Lend GPUs: lets a main PC use this PC's GPUs."), inner, Body, Muted));
-            var main = Button(T("メイン", "Main"), !worker.Running, (s, e) => { worker.Stop(); ReadState(); });
-            var lend = Button(T("GPU を貸す", "Lend GPUs"), worker.Running, (s, e) => { if (!server.Running) worker.Start(); });
-            lend.Enabled = !server.Running || worker.Running;
-            role.Controls.Add(Row(main, lend));
-            if (server.Running && !worker.Running)
-                role.Controls.Add(Label(T("モデルを動かしている間は貸せません。", "Stop the model first to lend the GPUs."), Small, Muted));
-            if (worker.Running)
-                role.Controls.Add(Status(worker.State == RunState.Ready ? T("貸しています。メインの PC から見つけられます。", "Lending: main PCs on the network can find this PC.") : T("準備しています…", "Getting ready…"), Good));
+            var card = Card();
+            card.MinimumSize = new Size(w, 0);
+            card.MaximumSize = new Size(w, 0);
+            card.Controls.Add(Label(T("この PC の役割", "What this PC does"), H2));
+            card.Controls.Add(Wrap(T("自動: モデルを動かしていない間は GPU をほかの PC に貸し、ここで起動するとメインになります。メイン: 貸しません。GPU を貸す: 貸すだけです。",
+                                     "Auto: lends the GPUs to other PCs while no model runs here, and becomes the main PC when you start one here. Main: never lends. Lend GPUs: only lends."), inner, Body, Muted));
+            card.Controls.Add(Row(
+                Button(T("自動", "Auto"), role == "auto", (s, e) => SetRole("auto")),
+                Button(T("メイン", "Main"), role == "main", (s, e) => SetRole("main")),
+                Button(T("GPU を貸す", "Lend GPUs"), role == "lend", (s, e) => SetRole("lend"))));
+            if (worker.InUse)
+                card.Controls.Add(Status(T($"{string.Join(", ", worker.Users.Select(worker.NameOf))} がこの PC の GPU を使っています", $"{string.Join(", ", worker.Users.Select(worker.NameOf))} is using this PC's GPUs"), Purple));
+            else if (worker.Running)
+                card.Controls.Add(Status(worker.State == RunState.Ready ? T("貸せます。同じネットワークの PC から見つけられます。", "Ready to lend: PCs on the network can find this PC.") : T("準備しています…", "Getting ready…"), Good));
+            else if (server.Running && Lends)
+                card.Controls.Add(Label(T("ここでモデルを動かしている間は貸しません。止めると、また貸せるようになります。", "While a model runs here, the GPUs are not lent. Once it stops, they are again."), Small, Muted));
             else if (worker.State == RunState.Failed && worker.LastError.Length > 0)
-                role.Controls.Add(Wrap(worker.LastError, inner, Small, Bad));
-            col.Controls.Add(role);
+                card.Controls.Add(Wrap(worker.LastError, inner, Small, Bad));
+            if (role == "main" && worker.InUse)
+                card.Controls.Add(Wrap(T("貸すのをやめると、その PC のモデルは止まります。", "Stopping the lending ends that PC's model."), inner, Small, Bad));
+            col.Controls.Add(card);
+
+            // Why other PCs cannot reach this one, when the worker found a reason.
+            foreach (var note in worker.Notes)
+            {
+                var c = Card(Notice, NoticeLine);
+                c.MinimumSize = new Size(w, 0);
+                c.MaximumSize = new Size(w, 0);
+                c.Controls.Add(Label(T("ほかの PC からこの PC に届きません", "Other PCs cannot reach this PC"), Bold));
+                var isPublic = note.IndexOf(" as public", StringComparison.Ordinal) >= 0;
+                c.Controls.Add(Wrap(isPublic
+                    ? T("Windows がこのネットワークを「パブリック」として扱っています。家の LAN なら、Windows の設定 > ネットワークとインターネット で、このネットワークを「プライベート ネットワーク」にしてください。",
+                        "Windows treats this network as public. On a home LAN, make it a private network in Settings > Network & internet.")
+                    : T("Windows ファイアウォールが Python への接続を止めています。「ファイアウォールによるアプリケーションの許可」で、Python の「プライベート」にチェックを入れてください。",
+                        "Windows Firewall blocks connections to Python. Under Allow an app through firewall, tick Private for Python."), inner, Body, Ink));
+                c.Controls.Add(Wrap(note, inner, Small, Muted));
+                col.Controls.Add(c);
+            }
 
             foreach (var a in worker.Asking)
             {
@@ -1368,12 +1557,54 @@ namespace GPUEnsembleApp
                 var address = a.Value;
                 ask.Controls.Add(Row(
                     Button(T("許可する", "Allow"), true, (s, e) => worker.Allow(address)),
-                    Button(T("断る", "Refuse"), false, (s, e) => worker.Forget(address))));
-                ask.Controls.Add(Label(T("許可した PC は覚えておき、次からは聞きません。", "An allowed PC is remembered and not asked about again."), Small, Muted));
+                    Button(T("断る", "Refuse"), false, (s, e) => worker.Deny(address))));
+                ask.Controls.Add(Label(T("許可した PC も断った PC も覚えておき、次からは聞きません。", "Allowed and refused PCs are remembered and not asked about again."), Small, Muted));
                 col.Controls.Add(ask);
             }
 
-            if (worker.Running) return;
+            var linked = worker.Linked;
+            if (linked.Length > 0)
+            {
+                Section(col, T("自動でつないだ PC", "PCs linked without asking"));
+                var c = Card();
+                c.MinimumSize = new Size(w, 0);
+                c.MaximumSize = new Size(w, 0);
+                c.Controls.Add(Wrap(T("同じ家の LAN（プライベート）か、同じ Tailscale のアカウントの PC です。この PC の GPU を使えます。",
+                                      "PCs on the same private home LAN or the same Tailscale account. They may use this PC's GPUs."), inner, Small, Muted));
+                foreach (var a in linked)
+                {
+                    var address = a.Value;
+                    var line = Row(Label($"{a.Key}  ({a.Value})", Body), Button(T("断る", "Refuse"), false, (s, e) => worker.Deny(address)));
+                    line.WrapContents = false;
+                    c.Controls.Add(line);
+                }
+                col.Controls.Add(c);
+            }
+
+            // How PCs are let in, and whether this app opens when Windows starts.
+            var how = Card();
+            how.MinimumSize = new Size(w, 0);
+            how.MaximumSize = new Size(w, 0);
+            how.Controls.Add(Label(T("つなぎ方", "How PCs link"), H2));
+            var trust = Settings.TrustLan;
+            how.Controls.Add(Label(T("家の LAN の PC は、許可を押さずにつなぐ", "Link PCs on the home LAN without asking"), Bold));
+            how.Controls.Add(Wrap(T("Windows で「プライベート」にしたネットワークの、同じ LAN の PC だけです。「パブリック」のネットワーク（お店や学校など）では、今までどおり許可を聞きます。",
+                                    "Only PCs on the same LAN, on a network Windows treats as private. On a public network (shops, schools) the app still asks."), inner, Small, Muted));
+            how.Controls.Add(Row(
+                Button(T("つなぐ", "On"), trust, (s, e) => SetTrustLan(true)),
+                Button(T("毎回聞く", "Ask"), !trust, (s, e) => SetTrustLan(false))));
+            var atSignIn = Settings.OpenAtSignIn;
+            var signIn = Label(T("Windows にサインインしたら、このアプリを開く", "Open this app when I sign in to Windows"), Bold);
+            signIn.Margin = new Padding(0, Px(14), 0, 0);
+            how.Controls.Add(signIn);
+            how.Controls.Add(Wrap(T("通知領域のアイコンだけで開きます。PC をつけるだけで、ほかの PC から見つけられるようになります。",
+                                    "It opens as the icon in the notification area only, so other PCs find this one as soon as it is on."), inner, Small, Muted));
+            how.Controls.Add(Row(
+                Button(T("開く", "On"), atSignIn, (s, e) => SetOpenAtSignIn(true)),
+                Button(T("開かない", "Off"), !atSignIn, (s, e) => SetOpenAtSignIn(false))));
+            col.Controls.Add(how);
+
+            if (LendOnly) return;
             Section(col, T("GPU を貸している PC", "PCs that lend their GPUs"));
             Reading(col);
             if (state == null) return;
@@ -1414,11 +1645,84 @@ namespace GPUEnsembleApp
             add.MinimumSize = new Size(cardW, 0);
             add.MaximumSize = new Size(cardW, 0);
             add.Controls.Add(Label(T("ほかの PC を足す", "Add another PC"), H2));
-            add.Controls.Add(Wrap(T("その PC にもこのアプリを入れて「GPU を貸す」を押すと、ここに出てきます。別の場所の PC は、両方を Tailscale の同じアカウントにつなぎます。",
-                                    "Install this app there too and press Lend GPUs; it shows up here. For a PC at another place, sign both PCs in to the same Tailscale account."), cardW - Px(46), Small, Muted));
+            add.Controls.Add(Wrap(T("その PC にもこのアプリを入れて開くと、ここに出てきます（役割が「自動」か「GPU を貸す」のとき）。別の場所の PC は、両方を Tailscale の同じアカウントにつなぎます。",
+                                    "Install this app there too and open it; it shows up here (with Auto or Lend GPUs). For a PC at another place, sign both PCs in to the same Tailscale account."), cardW - Px(46), Small, Muted));
             add.Controls.Add(Row(Button(T("もう一度さがす", "Look again"), false, (s, e) => ReadState())));
             list.Controls.Add(add);
             col.Controls.Add(list);
+        }
+
+        /// <summary>
+        /// The first start's question: what this PC does. Nothing is lent before the user answers, so that a newly
+        /// installed app never offers this PC's GPUs to other PCs on its own.
+        /// </summary>
+        void RoleQuestion(FlowLayoutPanel col, int w)
+        {
+            var c = Card(Notice, NoticeLine);
+            c.MinimumSize = new Size(w, 0);
+            c.MaximumSize = new Size(w, 0);
+            var inner = w - Px(48);
+            c.Controls.Add(Label(T("この PC の役割を選んでください", "Choose what this PC does"), H2));
+            c.Controls.Add(Wrap(T("自動（おすすめ）: モデルを動かしていない間は、この PC の GPU を同じネットワークのほかの PC に貸し、ここで起動するとメインになります。メイン: 貸しません。GPU を貸す: 貸すだけです。あとで「つながる PC」で変えられます。",
+                                  "Auto (recommended): while no model runs here, this PC lends its GPUs to other PCs on the network, and becomes the main PC when you start a model here. Main: never lends. Lend GPUs: only lends. You can change it later on the Other PCs page."), inner, Body, Muted));
+            c.Controls.Add(Row(
+                Button(T("自動", "Auto"), true, (s, e) => SetRole("auto")),
+                Button(T("メイン", "Main"), false, (s, e) => SetRole("main")),
+                Button(T("GPU を貸す", "Lend GPUs"), false, (s, e) => SetRole("lend"))));
+            col.Controls.Add(c);
+        }
+
+        void SetRole(string chosen)
+        {
+            role = chosen;
+            try { Settings.Role = chosen; } catch (Exception e) { AppendLog("[app] could not save the role: " + e.Message); }
+            if (chosen == "main") worker.Stop();
+            else if (!server.Running && !worker.Running) worker.Start();
+            ReadState();
+            Render();
+        }
+
+        /// <summary>The boost switch under the Start button: off unless the user turns it on, kept for the next starts.</summary>
+        void BoostChoice(Control card, int inner)
+        {
+            var boost = Settings.Boost;
+            var title = Label(T("ブースト", "Boost"), Bold);
+            title.Margin = new Padding(0, Px(14), 0, 0);
+            card.Controls.Add(title);
+            card.Controls.Add(Wrap(T("動かしている間、この PC の GPU のクロックを固定して、待ち時間に遅くならないようにします。起動のたびに Windows が管理者の確認を出します。消費電力が上がります。",
+                                     "While the model runs, the clocks of this PC's GPUs are locked so that they do not slow down while they wait. Windows asks for administrator approval at each start. The GPUs draw more power."),
+                                   inner, Small, Muted));
+            card.Controls.Add(Row(
+                Button(T("オン", "On"), boost, (s, e) => SetBoost(true)),
+                Button(T("オフ", "Off"), !boost, (s, e) => SetBoost(false))));
+        }
+
+        void SetBoost(bool on)
+        {
+            try { Settings.Boost = on; } catch (Exception e) { AppendLog("[app] could not save the setting: " + e.Message); }
+            Render();
+        }
+
+        void SetTrustLan(bool on)
+        {
+            try { Settings.TrustLan = on; } catch (Exception e) { AppendLog("[app] could not save the setting: " + e.Message); }
+            RestartLending();
+            Render();
+        }
+
+        /// <summary>Starts the lending again with the new settings, unless another PC uses it now (then at its next start).</summary>
+        void RestartLending()
+        {
+            if (!worker.Running || worker.InUse) return;
+            worker.Stop();
+            Later(() => { if (!server.Running && !worker.Running && Lends && !exiting) worker.Start(); });
+        }
+
+        void SetOpenAtSignIn(bool on)
+        {
+            try { Settings.OpenAtSignIn = on; }
+            catch (Exception e) { MessageBox.Show(this, e.Message, "GPUEnsemble"); }
+            Render();
         }
 
         // --- window and tray ---------------------------------------------------------------------
@@ -1501,11 +1805,11 @@ namespace GPUEnsembleApp
         protected override void OnPaint(PaintEventArgs e)
         {
             var g = e.Graphics;
-            g.Clear(Surface);
+            g.Clear(Ui.Theme.Chrome);
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             if (selected || hover)
                 using (var path = Round(new RectangleF(0, 0, Width - 1, Height - 1), Px(10)))
-                using (var b = new SolidBrush(selected ? Soft : Hex("#F6F6FB"))) g.FillPath(b, path);
+                using (var b = new SolidBrush(selected ? Soft : Hover)) g.FillPath(b, path);
             var d = Px(8);
             var dot = new RectangleF(Px(14), (Height - d) / 2f, d, d);
             if (selected)

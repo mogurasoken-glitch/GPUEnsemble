@@ -17,16 +17,24 @@ its estimate (benchmarks/clock-hold.md). It is only said of a card that takes
 a tenth or more of the time per token: on the E5 rig a card behind 49 CPU
 layers idles 97% of each token, and its clocks then cost nothing.
 
+Cards on other PCs (a worker's, reached over llama.cpp RPC) are read by
+asking that PC's worker (``remote_cards``): it answers the main PCs it lets
+in with its lent cards' nvidia-smi readings, on the same UDP port as
+``discovery``. A worker of GPUEnsemble 0.1.0 does not answer that question;
+its cards then keep only what the plan says, and a note says why.
+
 ``snapshot`` is the JSON the Windows app reads (``monitor --json``); add keys
 freely, but do not rename or drop one without changing the app too:
 
     {"version": 1, "running": true, "model": "gpt-oss-120b", "api": "http://127.0.0.1:8080/v1",
      "ready": true, "busy": false, "speed": 13.4 | null, "prompt_speed": 210.0 | null, "estimate": 13.1 | null,
      "tokens": 1234, "slowest": "GPU0 NVIDIA GeForce RTX 2080 Ti" | null, "slowest_cpu_experts": false,
-     "stages": [{"gpu", "here", "index", "first", "last", "ms", "share", "cpu_experts"}],
+     "engine": "llama.cpp" | "own",
+     "stages": [{"gpu", "here", "index", "rpc", "first", "last", "ms", "share", "cpu_experts"}],
      "cpu": {"layers": 4, "ms": 12.0, "share": 0.1} | null,
      "gpus": [{"index", "name", "used_gib", "total_gib", "temp_c", "load", "clock_mhz", "max_clock_mhz",
-               "power_w", "pstate", "layers": "0-17" | null, "clock_down": false, "hot": false}],
+               "power_w", "pstate", "layers": "0-17" | null, "clock_down": false, "hot": false,
+               "here": true, "rpc": null | "100.64.0.2:50052", "pc": null | "PC2"}],
      "notes": ["..."]}
 
 ``speed`` and ``prompt_speed`` are tokens/s of the answers that finished
@@ -40,6 +48,23 @@ the speeds count from there. Before that, they are null.
 stay in RAM and that the CPU computes (the plan counts them with the card that
 holds the layers); ``slowest_cpu_experts`` says so of the slowest stage, which
 is then slow because of the CPU, not the card.
+
+With GPUEnsemble's own engine (``up --engine own``) the snapshot has
+``"engine": "own"``. Its cards hold the layers in turn, so a stage has
+``count`` (how many layers it holds between ``first`` and ``last``) and
+``ram_experts`` (of how many of them the experts stay in RAM), and a card's
+``layers`` reads "0-34 in turn (18)". There is no estimate of its
+speed: ``estimate``, ``slowest`` and the stages' ``share`` are null and
+their ``ms`` is 0. The engine generates with the card that computes the
+attention in P3 (engine/README.md), so only P5 and below count as clocked
+down there, and only for a card that computes the attention of generated
+tokens (``generates``; false for the other cards when one card does it all).
+
+``index`` is the card's nvidia-smi number on its own PC. A stage on another
+PC has ``here`` false, ``index`` null and ``rpc`` (its worker's address); a
+card of another PC has ``here`` false, ``rpc``, ``pc`` (the name its worker
+gives) and its ``index`` there. A card is matched to its stage by ``rpc``
+and nvidia-smi number, so GPU0 of this PC and GPU0 of another stay apart.
 """
 
 from __future__ import annotations
@@ -48,7 +73,9 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -65,6 +92,7 @@ GPU_FIELDS = ("index,name,memory.used,memory.total,temperature.gpu,utilization.g
 # down (P0-P2 are the working states; the driver's "GPU idle" states start at P3). A card that does
 # not tell its state is judged by its clock: below this share of its top clock.
 CLOCK_DOWN_PSTATE = 3
+OWN_CLOCK_DOWN_PSTATE = 5  # the own engine: see the module's description
 CLOCK_DOWN = 0.5
 # ... and only when its stage takes at least this share of the time per token.
 CLOCK_DOWN_SHARE = 0.1
@@ -80,11 +108,14 @@ def run_file() -> str:
     return os.path.join(home_dir(), "run", "up.json")
 
 
+def cuda_index(llama_device) -> int | None:
+    """nvidia-smi's number of a card from llama.cpp's name for it (CUDA_DEVICE_ORDER=PCI_BUS_ID: the same)."""
+    name = str(llama_device or "")
+    return int(name[4:]) if name.startswith("CUDA") and name[4:].isdigit() else None
+
+
 def _gpu_index(d: Device) -> int | None:
-    name = d.llama_device or ""
-    if d.rpc is None and name.startswith("CUDA") and name[4:].isdigit():
-        return int(name[4:])
-    return None
+    return cuda_index(d.llama_device) if d.rpc is None else None
 
 
 def run_info(plan: Plan, devices: list[Device], model: str, host: str, port: int) -> dict:
@@ -97,6 +128,9 @@ def run_info(plan: Plan, devices: list[Device], model: str, host: str, port: int
             "gpu": s.device,
             "here": d is None or d.rpc is None,
             "index": _gpu_index(d) if d is not None else None,
+            # A card of another PC: its worker's address and llama.cpp's name for it there.
+            "rpc": d.rpc if d is not None else None,
+            "llama_device": d.llama_device if d is not None and d.rpc is not None else None,
             "first": s.first_layer if s.n_layers else None,
             "last": s.last_layer if s.n_layers else None,
             "seconds": s.seconds_per_token,
@@ -114,6 +148,44 @@ def run_info(plan: Plan, devices: list[Device], model: str, host: str, port: int
         "started": time.time(),
         "seconds_per_token": plan.seconds_per_token,
         "cpu_layers": plan.cpu_layers,
+        "stages": stages,
+    }
+
+
+def run_info_own(placement, devices: list[Device], model: str, host: str, port: int) -> dict:
+    """The run file for GPUEnsemble's own engine (``ownengine.Placement``): the cards hold the layers in
+    turn, and nothing estimates the time they take."""
+    by_name = {d.name: d for d in devices}
+    in_ram = set(placement.host_expert_layers)
+    stages = []
+    for share in placement.cards:
+        d = by_name.get(share.device)
+        stages.append({
+            "gpu": share.device,
+            "here": True,
+            "index": _gpu_index(d) if d is not None else None,
+            "rpc": None,
+            "llama_device": None,
+            "first": share.layers[0] if share.layers else None,
+            "last": share.layers[-1] if share.layers else None,
+            "count": len(share.layers),
+            "ram_experts": sum(1 for il in share.layers if il in in_ram),
+            # with the attention of generated tokens gathered on one card, the others have little to do
+            "generates": placement.gather is None or share is placement.cards[placement.gather],
+            "seconds": None,
+            "cpu_experts": any(il in in_ram for il in share.layers),
+        })
+    shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    return {
+        "version": VERSION,
+        "engine": "own",
+        "model": model,
+        "host": shown,
+        "port": port,
+        "pid": os.getpid(),
+        "started": time.time(),
+        "seconds_per_token": None,
+        "cpu_layers": 0,
         "stages": stages,
     }
 
@@ -293,9 +365,11 @@ def _pstate(text) -> int | None:
     return int(text[1:]) if text[:1] == "P" and text[1:].isdigit() else None
 
 
-def _layers(first, last) -> str | None:
+def _layers(first, last, count=None) -> str | None:
     if first is None or last is None:
         return None
+    if count is not None and count < last - first + 1:  # the own engine: every second (third, ...) layer
+        return f"{first}-{last} in turn ({count})"
     return str(first) if first == last else f"{first}-{last}"
 
 
@@ -310,7 +384,8 @@ def snapshot(run: dict | None, gpus: list[dict], metrics: dict[str, float] | Non
     estimate = None
     speed = _speed(rates.speed)
     busy = bool(metrics and metrics.get(PROCESSING, 0) > 0)
-    by_index: dict[int, dict] = {}
+    by_card: dict[tuple, dict] = {}
+    own = bool(run and run.get("engine") == "own")
     if run is not None:
         total = float(run.get("seconds_per_token") or 0.0)
         estimate = _speed(1.0 / total) if total > 0 else None
@@ -324,20 +399,25 @@ def snapshot(run: dict | None, gpus: list[dict], metrics: dict[str, float] | Non
                 "gpu": s.get("gpu"),
                 "here": bool(s.get("here", True)),
                 "index": s.get("index"),
+                "rpc": s.get("rpc"),
                 "first": s.get("first"),
                 "last": s.get("last"),
+                "count": s.get("count"),
+                "ram_experts": s.get("ram_experts"),
+                "generates": bool(s.get("generates", True)),
                 "ms": round(sec * scale * 1000, 1),
                 "share": round(sec / total, 2) if total > 0 else None,
                 "cpu_experts": bool(s.get("cpu_experts")),
             }
             stages_out.append(entry)
-            if entry["index"] is not None:
-                by_index[entry["index"]] = entry
+            key = _stage_card(s)
+            if key is not None:
+                by_card[key] = entry
         if run.get("cpu_layers"):  # the rest of the time without CPU layers is waiting (network, start of a step)
             cpu = {"layers": int(run.get("cpu_layers") or 0), "ms": round(cpu_seconds * scale * 1000, 1),
                    "share": round(cpu_seconds / total, 2) if total > 0 else None}
         timed = [s for s in stages_out if s["first"] is not None]
-        if timed:
+        if timed and total > 0:
             top = max(timed, key=lambda s: s["ms"])
             if cpu is None or top["ms"] >= cpu["ms"]:
                 slowest = top["gpu"]
@@ -346,34 +426,39 @@ def snapshot(run: dict | None, gpus: list[dict], metrics: dict[str, float] | Non
                 slowest = "CPU"
     gpus_out = []
     for g in gpus:
-        stage = by_index.get(g["index"])
+        stage = by_card.get((g.get("rpc"), g["index"]))
         load = g.get("load") or 0
         clock, top = g.get("clock_mhz"), g.get("max_clock_mhz")
         working = stage is not None and stage["first"] is not None and (busy or load >= BUSY_LOAD)
-        matters = working and (stage["share"] is None or stage["share"] >= CLOCK_DOWN_SHARE)
+        matters = working and stage["generates"] and (stage["share"] is None or stage["share"] >= CLOCK_DOWN_SHARE)
         state = _pstate(g.get("pstate"))
         if state is not None:
-            lowered = state >= CLOCK_DOWN_PSTATE
+            lowered = state >= (OWN_CLOCK_DOWN_PSTATE if own else CLOCK_DOWN_PSTATE)
         else:
             lowered = bool(clock and top and clock < CLOCK_DOWN * top)
         clock_down = bool(matters and lowered)
         temp = g.get("temp_c")
         out = dict(g)
-        out["layers"] = _layers(stage["first"], stage["last"]) if stage else None
+        out["here"] = g.get("rpc") is None
+        out["rpc"] = g.get("rpc")
+        out["pc"] = g.get("pc")
+        out["layers"] = _layers(stage["first"], stage["last"], stage["count"]) if stage else None
         out["clock_down"] = clock_down
         out["hot"] = bool(temp is not None and temp >= HOT_C)
         gpus_out.append(out)
+        shown = g["name"] if out["here"] else f"{g['name']} on {out['pc'] or out['rpc']}"
         if clock_down:
-            notes.append(f"{g['name']} is in {g.get('pstate') or 'a low state'} at {_v(clock)} of {_v(top)} MHz "
+            notes.append(f"{shown} is in {g.get('pstate') or 'a low state'} at {_v(clock)} of {_v(top)} MHz "
                          "while it works on the model: the driver has lowered its clocks")
         if out["hot"]:
-            notes.append(f"{g['name']} is at {temp:.0f} C")
+            notes.append(f"{shown} is at {temp:.0f} C")
     if run is not None and speed and estimate and speed < 0.8 * estimate:
         notes.append(f"generating at {speed:g} tokens/s, below the estimate of {estimate:g}")
     api = f"http://{run['host']}:{run['port']}/v1" if run else None
     return {
         "version": VERSION,
         "running": run is not None,
+        "engine": (run.get("engine") or "llama.cpp") if run else None,
         "model": run.get("model") if run else None,
         "api": api,
         "busy": busy,
@@ -389,6 +474,15 @@ def snapshot(run: dict | None, gpus: list[dict], metrics: dict[str, float] | Non
         "gpus": gpus_out,
         "notes": notes,
     }
+
+
+def _stage_card(stage: dict) -> tuple | None:
+    """The card a stage of the run file runs on: (None, nvidia-smi number) here, (worker's address, number) there."""
+    if stage.get("rpc"):
+        index = cuda_index(stage.get("llama_device"))
+        return (stage["rpc"], index) if index is not None else None
+    index = stage.get("index")
+    return (None, index) if index is not None else None
 
 
 def _v(x, fmt: str = "{:.0f}", none: str = "-") -> str:
@@ -407,22 +501,28 @@ def format_text(snap: dict) -> str:
             now = f"answering; the answers before this one ran at {snap['speed']:g} tokens/s"
         else:
             now = f"idle; the last answers ran at {snap['speed']:g} tokens/s"
-        lines.append(f"{snap['model']} at {snap['api']}: {now} (estimate {_v(snap['estimate'], '{:g}')})")
+        own = snap.get("engine") == "own"
+        about = "GPUEnsemble's own engine, no estimate" if own else f"estimate {_v(snap['estimate'], '{:g}')}"
+        lines.append(f"{snap['model']} at {snap['api']}: {now} ({about})")
         if snap["slowest"]:
             with_cpu = " (with the experts of its layers that the CPU computes)" if snap["slowest_cpu_experts"] else ""
             lines.append(f"slowest part: {snap['slowest']}{with_cpu}")
         for s in snap["stages"]:
             where = "" if s["here"] else " (other PC)"
             experts = ", experts on the CPU" if s["cpu_experts"] else ""
-            lines.append(f"  {s['gpu']}{where}: layers {_layers(s['first'], s['last']) or 'head only'}{experts}, "
-                         f"~{s['ms']:.1f} ms per token")
+            if own:
+                experts = f", experts of {s.get('ram_experts')} of them in RAM" if s.get("ram_experts") else ""
+            time_ = "" if own else f", ~{s['ms']:.1f} ms per token"
+            lines.append(f"  {s['gpu']}{where}: layers {_layers(s['first'], s['last'], s.get('count')) or 'head only'}"
+                         f"{experts}{time_}")
         if snap["cpu"]:
             lines.append(f"  CPU: {snap['cpu']['layers']} layers, ~{snap['cpu']['ms']:.1f} ms per token")
     else:
         lines.append("no model is running (start one with up)")
     for g in snap["gpus"]:
         flags = (" CLOCKED DOWN" if g["clock_down"] else "") + (" HOT" if g["hot"] else "")
-        lines.append(f"GPU{g['index']} {g['name']}: {_v(g['used_gib'], '{:.1f}')}/{_v(g['total_gib'], '{:.1f}')} GiB, "
+        where = "" if g.get("here", True) else f" (other PC {g.get('pc') or g.get('rpc')})"
+        lines.append(f"GPU{g['index']} {g['name']}{where}: {_v(g['used_gib'], '{:.1f}')}/{_v(g['total_gib'], '{:.1f}')} GiB, "
                      f"{_v(g['temp_c'])} C, load {_v(g['load'])}%, {_v(g['clock_mhz'])}/{_v(g['max_clock_mhz'])} MHz, "
                      f"{_v(g['power_w'])} W {g['pstate']}{flags}")
     for n in snap["notes"]:
@@ -430,23 +530,93 @@ def format_text(snap: dict) -> str:
     return "\n".join(lines)
 
 
+# How long the monitor waits for the workers of other PCs to tell how their cards are doing.
+REMOTE_TIMEOUT = 1.0
+# A worker that did not answer (an older GPUEnsemble, or one that is gone) is asked again after this long,
+# so that it does not slow down every reading.
+REMOTE_RETRY = 30.0
+
+
+def remote_endpoints(run: dict | None) -> list[str]:
+    """The workers whose cards hold a part of the running model, in the order of the stages."""
+    if not run:
+        return []
+    return list(dict.fromkeys(s["rpc"] for s in run.get("stages", []) if s.get("rpc")))
+
+
+class RemoteCards:
+    """Readings of the cards that other PCs lend to the running model, asked of their workers.
+
+    ``ask(endpoints, timeout)`` is ``discovery.ask_cards``. A worker that does
+    not answer is left alone for ``retry`` seconds, and a note says that its
+    cards show only what the plan says.
+    """
+
+    def __init__(self, ask: Callable | None = None, timeout: float = REMOTE_TIMEOUT, retry: float = REMOTE_RETRY,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        if ask is None:
+            from .discovery import ask_cards as ask
+        self.ask = ask
+        self.timeout = timeout
+        self.retry = retry
+        self.clock = clock
+        self.silent: dict[str, float] = {}  # endpoint -> when it last did not answer
+
+    def read(self, endpoints: list[str]) -> tuple[list[dict], list[str]]:
+        """The cards (with ``rpc`` and ``pc``) and notes for the workers that do not answer."""
+        now = self.clock()
+        asked = [e for e in endpoints if now - self.silent.get(e, -self.retry) >= self.retry]
+        try:
+            answers = self.ask(asked, self.timeout) if asked else {}
+        except OSError:
+            answers = {}
+        cards, notes = [], []
+        for e in endpoints:
+            if e in answers:
+                self.silent.pop(e, None)
+                name, readings = answers[e]
+                for g in readings:
+                    if isinstance(g.get("index"), int):
+                        cards.append(dict(g, rpc=e, pc=name or e.rsplit(":", 1)[0]))
+            else:
+                if e in asked:
+                    self.silent[e] = now
+                notes.append(f"the PC at {e.rsplit(':', 1)[0]} did not tell how its cards are doing "
+                             "(its GPUEnsemble may be older than this one): they show only what the plan uses")
+        return cards, notes
+
+
 def watch(every: float, count: int, emit: Callable[[dict], None], *, read_run_=None, read_gpus_=None,
-          read_metrics_=None, sleep=time.sleep) -> None:
+          read_metrics_=None, remote_=None, sleep=time.sleep) -> None:
     """Take ``count`` readings (0: until stopped), ``every`` seconds apart, and hand each to ``emit``."""
     read_run_ = read_run_ or read_run
     read_gpus_ = read_gpus_ or read_gpus
     read_metrics_ = read_metrics_ or read_metrics
+    remote = remote_ or RemoteCards()
     rates = Rates()
     n = 0
     while True:
         notes = []
         run = read_run_()
+        endpoints = remote_endpoints(run)
+        far: list = [[], []]
+        asking = None
+        if endpoints:
+            # The other PCs answer over the network while this PC's cards and llama-server are read.
+            def ask() -> None:
+                far[0], far[1] = remote.read(endpoints)
+            asking = threading.Thread(target=ask, daemon=True)
+            asking.start()
         try:
             gpus = read_gpus_()
         except (RuntimeError, OSError, subprocess.SubprocessError) as e:
             gpus = []
             notes.append(f"could not read the GPUs: {e}")
         metrics = read_metrics_(run["host"], run["port"]) if run else None
+        if asking is not None:
+            asking.join()
+            gpus = gpus + far[0]
+            notes += far[1]
         rates.update(metrics, run)
         emit(snapshot(run, gpus, metrics, rates, notes))
         n += 1

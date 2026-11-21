@@ -30,7 +30,7 @@ A 59 GiB model that fits on neither card runs because the cards at hand are put 
 | Item | Details |
 | --- | --- |
 | OS | Windows 10 / 11 (64-bit) |
-| GPU | An NVIDIA GPU; checked with the RTX 20 series. With a driver that supports CUDA 12.4 (551.61 or later) the CUDA build is used, with an older one the Vulkan build |
+| GPU | An NVIDIA GPU; checked with the RTX 20 series and an RTX 4090. With a driver that supports CUDA 12.4 (551.61 or later) the CUDA build is used, with an older one the Vulkan build. With an AMD Radeon or Intel Arc card the Vulkan build is used, which runs every maker's cards together (not yet checked on such cards). A PC without a GPU can use the cards of other PCs, or run on its CPU alone |
 | RAM | Larger models use more. The development PC, which picks gpt-oss-120b, has 64 GB |
 | Disk | Free space for the model (about 5 to 59 GiB for the usual picks) and about 1 GB for llama.cpp |
 | Network | To download the model and llama.cpp the first time |
@@ -59,7 +59,7 @@ Double-click `GPUEnsemble.exe` in the folder of the `-app.zip` and a window open
 
 - **Home:** the GPUs that can be used, the recommended model, Start and Stop, and a button that opens the chat. While a model runs it shows the real speed and each card's memory and temperature.
 - **Models:** the models to choose from with their estimated speeds. Download, start, change the folder for models, and "Add a model..." (put a GGUF repository on Hugging Face on this PC's list).
-- **Other PCs:** use the GPUs of other PCs (main), or lend this PC's GPUs.
+- **Other PCs:** this PC's role (Auto, Main, Lend GPUs), the PCs it is linked with, and how PCs link. The app asks for the role when it is first opened (nothing is lent before that). With Auto (recommended), while no model runs here, this PC lends its GPUs to other PCs, and when you start a model here it becomes the main PC.
 - **Log:** the output of the commands that run behind the window.
 
 After the window is closed, the icon in the notification area opens it again. The window is in Japanese or English by the language of Windows; "English" / "日本語" below the menu on the left switches it, and the choice is kept for the next start.
@@ -90,11 +90,20 @@ The commands are described in detail in [planner/README.md](../planner/README.md
 
 With a second PC that has a GPU, its GPU can be used as well.
 
-### On the same home LAN
+### On the same home LAN (app)
+
+Unpack the `-app.zip` on both PCs and open `GPUEnsemble.exe`. The first time, the app asks for this PC's role: choose Auto (recommended). With Auto, a PC that runs no model lends its GPUs, and the PC where you start a model uses the GPUs of the others too.
+
+- PCs on the same LAN link without pressing Allow when Windows treats that network as private. The lending PC lists them under "PCs linked without asking" on its Other PCs page; press Refuse for one you do not want (remembered).
+- On a public network (shops, schools) they do not link by themselves: the lending PC shows Allow and Refuse. When the home LAN is set to public, the Other PCs page says so and how to change it.
+- Under "How PCs link" you can have it ask on the home LAN too. "Open this app when I sign in to Windows" makes a PC ready to lend as soon as it is on (it opens as the notification-area icon only).
+- While another PC uses this PC's GPUs, no model can be started here (that PC's model would stop).
+
+### On the same home LAN (commands)
 
 1. Unpack the same zip on the PC that lends its GPU, and double-click `Start GPUEnsemble worker.cmd`.
 2. On the main PC, double-click `Start GPUEnsemble.cmd`. The main PC finds the lending PC on the LAN by itself.
-3. The first time, the lending PC's window shows "PC '(main PC's name)' at (address) asks to use these GPUs". Type `y` and press Enter to lend the GPUs to that PC. Once allowed, it does not ask again.
+3. If both PCs are on the same private LAN, that is all. Otherwise the lending PC's window shows "PC '(main PC's name)' at (address) asks to use these GPUs". Type `y` and press Enter to lend the GPUs to that PC. Once allowed, it does not ask again. To refuse a PC linked without asking, type `deny (address)` in the lending PC's window.
 
 The main PC waits up to 2 minutes for this. If Windows asks whether Python may communicate, allow **private networks only**. If the main PC does not find the other one, look at the lending PC's window: it says with `note:` why it cannot be reached, for example when the network is set to Public.
 

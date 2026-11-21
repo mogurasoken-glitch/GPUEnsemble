@@ -7,8 +7,9 @@ bus width times data rate, as on NVIDIA's spec pages), and the planner expects
 figure is used as it is. To add a measurement, set ``measured_gbs`` on the card's entry and
 say where it came from in ``measured_by``. ``python -m gpuensemble_planner gpus`` lists the table.
 
-Names are matched against what nvidia-smi reports, with "NVIDIA", "GeForce", "Quadro" and
-"Tesla", "Generation" and memory sizes such as "6GB" taken off, as whole words and longest key first: "rtx 4070 ti super" wins over
+Names are matched against what nvidia-smi (or, for AMD and Intel cards, llama.cpp's Vulkan
+build) reports, with "NVIDIA", "GeForce", "Quadro", "Tesla", "AMD", "Intel", "Instinct",
+"Graphics", "(R)", "(TM)", "Generation" and memory sizes such as "6GB" taken off, as whole words and longest key first: "rtx 4070 ti super" wins over
 "rtx 4070 ti", and "a10" does not match "a100". A key with several entries has one per memory
 size (the RTX 3060 has 12 GB at 360 GB/s and 8 GB at 240 GB/s under one name); the card's
 memory size picks one, and without it the first entry is used. A notebook card ("Laptop GPU")
@@ -177,10 +178,63 @@ GPUS: list[GpuSpec] = [
         ("p100", 732, 16), ("p100", 549, 12), ("p40", 347, 24), ("p4", 192, 8),
     ]),
     *_group("datacenter", "Maxwell", [("m40", 288, 12), ("m40", 288, 24)]),
+    # AMD, run through llama.cpp's Vulkan build. Names as AMD's driver gives them ("AMD Radeon RX 7900 XTX");
+    # Linux adds the chip in brackets ("(RADV NAVI31)"), which the match leaves alone. Not measured yet:
+    # every row is the published figure times GPU_EFFICIENCY, which was fitted on NVIDIA cards with CUDA.
+    *_group("desktop", "RDNA 4", [
+        ("radeon rx 9070 xt", 640, 16), ("radeon rx 9070 gre", 432, 12), ("radeon rx 9070", 640, 16),
+        ("radeon rx 9060 xt", 320, 16), ("radeon rx 9060 xt", 320, 8),
+    ]),
+    *_group("desktop", "RDNA 3", [
+        ("radeon rx 7900 xtx", 960, 24), ("radeon rx 7900 xt", 800, 20), ("radeon rx 7900 gre", 576, 16),
+        ("radeon rx 7800 xt", 624, 16), ("radeon rx 7700 xt", 432, 12), ("radeon rx 7600 xt", 288, 16),
+        ("radeon rx 7600", 288, 8),
+    ]),
+    *_group("desktop", "RDNA 2", [
+        ("radeon rx 6950 xt", 576, 16), ("radeon rx 6900 xt", 512, 16), ("radeon rx 6800 xt", 512, 16),
+        ("radeon rx 6800", 512, 16), ("radeon rx 6750 xt", 432, 12), ("radeon rx 6700 xt", 384, 12),
+        ("radeon rx 6700", 320, 10), ("radeon rx 6650 xt", 280, 8), ("radeon rx 6600 xt", 256, 8),
+        ("radeon rx 6600", 224, 8), ("radeon rx 6500 xt", 144, 4),
+    ]),
+    *_group("desktop", "RDNA 1", [
+        ("radeon rx 5700 xt", 448, 8), ("radeon rx 5700", 448, 8), ("radeon rx 5600 xt", 336, 6),
+        ("radeon rx 5500 xt", 224, 8), ("radeon rx 5500 xt", 224, 4),
+    ]),
+    *_group("desktop", "GCN 5", [
+        ("radeon vii", 1024, 16), ("radeon rx vega 64", 484, 8), ("radeon rx vega 56", 410, 8),
+    ]),
+    *_group("desktop", "GCN 4", [
+        ("radeon rx 590", 256, 8), ("radeon rx 580", 256, 8), ("radeon rx 580", 224, 4),
+        ("radeon rx 570", 224, 8), ("radeon rx 570", 224, 4), ("radeon rx 480", 256, 8),
+    ]),
+    *_group("laptop", "RDNA 3", [("radeon rx 7600m xt", 288, 8), ("radeon rx 7600m", 256, 8)]),
+    *_group("laptop", "RDNA 2", [("radeon rx 6800m", 384, 12), ("radeon rx 6700m", 320, 10)]),
+    *_group("workstation", "RDNA 4", [("radeon ai pro r9700", 640, 32)]),
+    *_group("workstation", "RDNA 3", [
+        ("radeon pro w7900", 864, 48), ("radeon pro w7800", 576, 32), ("radeon pro w7700", 576, 16),
+        ("radeon pro w7600", 288, 8),
+    ]),
+    *_group("workstation", "RDNA 2", [("radeon pro w6800", 512, 32), ("radeon pro w6600", 224, 8)]),
+    *_group("workstation", "GCN 5", [("radeon pro vii", 1024, 16)]),
+    *_group("datacenter", "CDNA", [
+        ("mi300x", 5300, 192), ("mi250x", 3277, 128), ("mi210", 1638, 64), ("mi100", 1229, 32),
+    ]),
+    *_group("datacenter", "GCN 5", [("mi60", 1024, 32), ("mi50", 1024, 16), ("mi50", 1024, 32), ("mi25", 484, 16)]),
+    # Intel Arc, also through Vulkan ("Intel(R) Arc(TM) B580 Graphics"). Not measured yet either.
+    *_group("desktop", "Xe2", [("arc b580", 456, 12), ("arc b570", 380, 10)]),
+    *_group("desktop", "Xe", [
+        ("arc a770", 560, 16), ("arc a770", 512, 8), ("arc a750", 512, 8), ("arc a580", 512, 8),
+        ("arc a380", 186, 6), ("arc a310", 124, 4),
+    ]),
+    *_group("laptop", "Xe", [
+        ("arc a770m", 512, 16), ("arc a730m", 336, 12), ("arc a550m", 224, 8), ("arc a370m", 112, 4),
+    ]),
+    *_group("workstation", "Xe2", [("arc pro b60", 456, 24), ("arc pro b50", 224, 16)]),
+    *_group("workstation", "Xe", [("arc pro a60", 384, 12), ("arc pro a40", 192, 6)]),
 ]
 
 # Also "Generation" and memory sizes ("RTX 3050 6GB Laptop GPU"): the size is passed separately.
-_REMOVED_WORDS = re.compile(r"\b(nvidia|geforce|quadro|tesla|generation|\d+ ?gb)\b")
+_REMOVED_WORDS = re.compile(r"\b(nvidia|geforce|quadro|tesla|generation|\d+ ?gb|amd|ati|intel|instinct|graphics)\b")
 # "RTX A6000", "Tesla V100-PCIE-16GB": a key ends where a letter or digit does not follow.
 _PATTERNS = {key: re.compile(r"(?<![a-z0-9])" + re.escape(key) + r"(?![a-z0-9])")
              for key in {g.key for g in GPUS}}
@@ -190,7 +244,9 @@ _NOTEBOOK = ("laptop", "mobile", "max-q")
 
 def clean_name(name: str) -> str:
     """A card's name as the table matches it: lower case, maker and brand words taken off."""
-    return " ".join(_REMOVED_WORDS.sub(" ", name.lower()).split())
+    # "Intel(R) Arc(TM) A770 Graphics", "AMD Radeon(TM) RX 6800": the marks are not part of the name.
+    lowered = name.lower().replace("(r)", " ").replace("(tm)", " ")
+    return " ".join(_REMOVED_WORDS.sub(" ", lowered).split())
 
 
 def find(name: str, vram_gb: float | None = None) -> GpuSpec | None:

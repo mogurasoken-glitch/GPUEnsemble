@@ -19,12 +19,12 @@
   ],
   "host": {
     "ram_for_weights_gib": 52,
-    "cpu_bandwidth_gbs": 19.6,
+    "cpu_bandwidth_gbs": 25,
     "cpu_kv_gbs": {
       "f16": 3.0,
       "q8_0": 1.9
     },
-    "expert_bandwidth_gbs": 17,
+    "expert_bandwidth_gbs": 23.5,
     "expert_slowdown_per_gib": 0.016,
     "expert_path": "auto",
     "cpu_overhead_ms": 10,

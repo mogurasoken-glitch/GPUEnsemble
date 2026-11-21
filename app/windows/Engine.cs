@@ -197,6 +197,68 @@ namespace GPUEnsembleApp
             set => Put("language", value);
         }
 
+        /// <summary>
+        /// What this PC does: "auto" lends its GPUs while no model runs here and stops lending to run one; "main" never
+        /// lends; "lend" only lends; null until the user chooses (the app asks on its first start and lends nothing before).
+        /// </summary>
+        public static string? Role
+        {
+            get => Get("role") is string s && (s == "auto" || s == "main" || s == "lend") ? s : null;
+            set => Put("role", value);
+        }
+
+        /// <summary>Whether main PCs on this PC's private home network are let in without asking (on unless turned off).</summary>
+        public static bool TrustLan
+        {
+            get => Get("trust_lan") != "off";
+            set => Put("trust_lan", value ? null : "off");
+        }
+
+        /// <summary>The window's colors ("charcoal" or "light"); null for the default (charcoal).</summary>
+        public static string? Theme
+        {
+            get => Get("theme");
+            set => Put("theme", value);
+        }
+
+        /// <summary>
+        /// Boost mode: <c>up --boost</c> locks the clocks of this PC's cards that run the model until it stops. It asks for
+        /// administrator rights each time and draws more power, so it is off unless the user turns it on.
+        /// </summary>
+        public static bool Boost
+        {
+            get => Get("boost") == "on";
+            set => Put("boost", value ? "on" : null);
+        }
+
+        const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        const string RunName = "GPUEnsemble";
+
+        /// <summary>
+        /// Whether Windows opens this app (in the notification area) when the user signs in: a value under the user's
+        /// own Run key, which needs no administrator and goes with "off".
+        /// </summary>
+        public static bool OpenAtSignIn
+        {
+            get
+            {
+                try
+                {
+                    using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey))
+                        return key?.GetValue(RunName) is string v && v.IndexOf(System.Windows.Forms.Application.ExecutablePath, StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+                catch (Exception) { return false; }
+            }
+            set
+            {
+                using (var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunKey))
+                {
+                    if (value) key.SetValue(RunName, "\"" + System.Windows.Forms.Application.ExecutablePath + "\" --tray");
+                    else if (key.GetValue(RunName) != null) key.DeleteValue(RunName);
+                }
+            }
+        }
+
         static string? Get(string key) => Read().TryGetValue(key, out var v) && v is string s && s.Length > 0 ? s : null;
 
         static void Put(string key, string? value)
@@ -394,6 +456,12 @@ namespace GPUEnsembleApp
         static readonly Regex ready = new Regex(@"^ready: (?<url>https?://\S+?)/v1\b");
         // discovery.Approvals.request: "PC 'name' at 1.2.3.4 asks to use these GPUs. ..."
         static readonly Regex asks = new Regex(@"^PC '(?<name>.*)' at (?<address>[0-9a-fA-F:.]+) asks to use these GPUs");
+        // worker.start: "PC 'name' at 1.2.3.4 is on this PC's home network ..." / "... is signed in to Tailscale ..."
+        static readonly Regex linked = new Regex(@"^PC '(?<name>.*)' at (?<address>[0-9a-fA-F:.]+) is (?<how>on this PC's home network|signed in to Tailscale)");
+        // gate.Gate with announce: "gate: the PC at 1.2.3.4 is using these GPUs" / "... is done with these GPUs"
+        static readonly Regex using_ = new Regex(@"^gate: the PC at (?<address>[0-9a-fA-F:.]+) is (?<what>using|done with) these GPUs");
+        // serving: "the PC at 1.2.3.4 asks this PC to run ID itself" / "stopped ID for the PC at ..." / "could not run ID for the PC at ..."
+        static readonly Regex serving = new Regex(@"^(?:the PC at (?<start>[0-9a-fA-F:.]+) asks this PC to run |(?:stopped|could not run) \S+ for the PC at (?<end>[0-9a-fA-F:.]+))");
         // cli._up: "starting llama-server with NAME; ..."
         static readonly Regex starting = new Regex(@"^starting llama-server with (?<name>[^;]+);");
 
@@ -418,6 +486,39 @@ namespace GPUEnsembleApp
             address = m.Success ? m.Groups["address"].Value : "";
             return m.Success;
         }
+
+        /// <summary>A main PC let in without asking: on the home LAN (<paramref name="lan"/>) or the same Tailscale account.</summary>
+        public static bool Linked(string line, out string name, out string address, out bool lan)
+        {
+            var m = linked.Match(line);
+            name = m.Success ? m.Groups["name"].Value : "";
+            address = m.Success ? m.Groups["address"].Value : "";
+            lan = m.Success && m.Groups["how"].Value.StartsWith("on", StringComparison.Ordinal);
+            return m.Success;
+        }
+
+        /// <summary>A PC starts (true) or stops (false) using the lent GPUs, through the RPC gate or by running a model here.</summary>
+        public static bool Using(string line, out string address, out bool starts, out bool runsModel)
+        {
+            var m = using_.Match(line);
+            runsModel = false;
+            if (m.Success)
+            {
+                address = m.Groups["address"].Value;
+                starts = m.Groups["what"].Value == "using";
+                return true;
+            }
+            m = serving.Match(line);
+            runsModel = m.Success;
+            starts = m.Success && m.Groups["start"].Success;
+            address = !m.Success ? "" : starts ? m.Groups["start"].Value : m.Groups["end"].Value;
+            return m.Success;
+        }
+
+        /// <summary>The worker's notes on what keeps other PCs from reaching it (Windows' network profile, its firewall).</summary>
+        public static string? Unreachable(string line) =>
+            line.StartsWith("note: ", StringComparison.Ordinal) && line.IndexOf("cannot reach this worker", StringComparison.Ordinal) >= 0
+                ? line.Substring(6) : null;
 
         public static string? Starting(string line) { var m = starting.Match(line); return m.Success ? m.Groups["name"].Value : null; }
     }

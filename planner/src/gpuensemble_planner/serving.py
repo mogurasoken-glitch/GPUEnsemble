@@ -123,7 +123,8 @@ def launch(model_id: str, ctx: int, port: int, log: LineLog, stop: threading.Eve
     used = [s for s in plan.stages if s.n_layers]
     say(f"{entry['name']} on {len(used)} GPU(s) of this PC, context {ctx}: "
         f"estimated {plan.tokens_per_second:.1f} tokens/s with half the context filled")
-    extra = ["--host", "127.0.0.1", "--port", str(port), "-a", model_id]
+    # --metrics: the main PC's monitor reads the speed of the answers through the gate, as it does here.
+    extra = ["--host", "127.0.0.1", "--port", str(port), "-a", model_id, "--metrics"]
     say("starting: " + command.shell(inst.server, model=path, extra=extra))
     return start(inst.server, command, path, extra, warmup=True, on_ready=on_ready, log=log, stop=stop)
 

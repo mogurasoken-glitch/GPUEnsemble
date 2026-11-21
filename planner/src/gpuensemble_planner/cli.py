@@ -46,7 +46,7 @@ import sys
 import time
 import webbrowser
 
-from .devices import GIB, detect_host, detect_nvidia, is_loopback, load_gpus, load_rig
+from .devices import GIB, detect_gpus, detect_host, is_loopback, load_gpus, load_rig, other_cards
 from .discovery import discovery_port, find_workers, is_this_pc, measure_rtt, one_address_each
 from .fetch import Piece, ask_to_fetch, stage_tensors
 from .gguf import GGUFError, read_model
@@ -54,11 +54,12 @@ from .hub import find_local, home_dir, models_dir, pull, source_url
 from .llamabin import DEFAULT_TAG, installed, setup
 from .model import ModelProfile, profile_from_gguf
 from .llamacpp import READY_TIMEOUT, llama_command, run
+from .ownengine import CHUNK, Placement, engine_command, engine_placement
 from .plan import Plan, PlanError, make_plan, remote_load_seconds, serving_pc
 from .recommend import MIN_SPEED, evaluate, format_table, load_catalog, pick
 from .remote import profile_of
 from . import __version__
-from . import appstate, cardhold, catalogs, monitor, serving, tailscale, worker
+from . import appstate, boost, cardhold, catalogs, homelan, monitor, serving, tailscale, worker
 
 # How the user starts this program, for the commands it suggests. The Windows
 # zip's launcher sets it to gpuensemble.cmd.
@@ -109,7 +110,8 @@ def format_plan(plan: Plan) -> str:
     w = max([34] + [len(s.device) for s in plan.stages])
     lines = [
         f"model:   {plan.model}",
-        f"mode:    {plan.mode}   context: {plan.context} tokens   KV cache: {plan.kv_type}",
+        f"mode:    {plan.mode}   context: {plan.context} tokens   KV cache: {plan.kv_type}"
+        + (f"   prompt chunk: {plan.ubatch} tokens" if plan.ubatch != 512 else ""),
         "",
         f"{'stage':<{w}} {'layers':>11} {'weights':>8} {'KV':>6} {'head':>6} {'used/cap GiB':>14} {'ms/token':>9}",
     ]
@@ -140,16 +142,72 @@ def format_plan(plan: Plan) -> str:
     return "\n".join(lines)
 
 
-def _hardware(args: argparse.Namespace, wait: float = 0.0):
+def format_placement(p: Placement) -> str:
+    """The own engine's placement, in the shape of ``format_plan``."""
+    step = len(p.cards)
+
+    def layers(share) -> str:
+        if step == 1 or len(share.layers) < 3:
+            return ", ".join(str(il) for il in share.layers) if step > 1 else f"{share.layers[0]}-{share.layers[-1]}"
+        return f"{share.layers[0]}, {share.layers[1]} .. {share.layers[-1]}"
+
+    w = max([34] + [len(share.device) for share in p.cards])
+    lw = max([6] + [len(layers(share)) for share in p.cards])
+    lines = [
+        f"model:   {p.model}",
+        f"engine:  GPUEnsemble's own (experimental)   context: {p.context} tokens   prompt chunk: {CHUNK} tokens",
+        "",
+        f"{'card':<{w}} {'layers':>{lw}} {'experts':>8} {'weights':>8} {'KV':>6} {'work':>6} {'copies':>7} {'used/cap GiB':>14}",
+    ]
+    for share in p.cards:
+        used = f"{_gib(share.used_bytes).strip()}/{_gib(share.capacity_bytes).strip()}"
+        lines.append(
+            f"{share.device:<{w}} {layers(share):>{lw}} {f'{len(share.expert_layers)} of {len(share.layers)}':>8} "
+            f"{_gib(share.weight_bytes):>8} {_gib(share.kv_bytes):>6} {_gib(share.work_bytes):>6} "
+            f"{_gib(share.copy_bytes):>7} {used:>14}"
+        )
+    lines.append("")
+    if p.host_expert_layers:
+        lines.append(f"experts in RAM: those of {len(p.host_expert_layers)} layers ({p.host_expert_bytes / GIB:.1f} GiB); "
+                     "the CPU computes them for generated tokens and short prompts, and they are streamed to the "
+                     "cards for long prompts")
+    lines.append("  (experts: layers whose experts are on the card; work: room for streamed experts and a prompt "
+                 "chunk; copies: the other cards' attention, kept again for generated tokens)")
+    lines.append("no speed estimate for this engine yet")
+    for note in p.notes:
+        lines.append(f"note: {note}")
+    return "\n".join(lines)
+
+
+def local_gpus(log=lambda s: None, install: bool = False):
+    """This PC's cards of any maker (``devices.detect_gpus``) and notes on them.
+
+    With ``install``, an AMD or Intel card gets llama.cpp's Vulkan build first, which runs every
+    maker's cards (``up`` and ``worker`` do this; ``plan`` and ``recommend`` only say so).
+    """
+    inst = installed()
+    if install and (inst is None or inst.backend != "vulkan"):
+        others = [a.name for a in other_cards()]
+        if others:
+            log(f"{', '.join(others)}: installing llama.cpp's Vulkan build, which runs AMD and Intel cards "
+                "(and NVIDIA cards beside them)")
+            inst = setup(backend="vulkan", log=log)
+    return detect_gpus(inst)
+
+
+def _hardware(args: argparse.Namespace, wait: float = 0.0, install: bool = False):
     if args.rig:
         devices, host = load_rig(args.rig)
         if args.ram_gib is not None:
             host.ram_bytes = int(args.ram_gib * GIB)
     else:
-        devices = detect_nvidia()
+        log = lambda s: print(s, file=sys.stderr, flush=True)  # noqa: E731
+        devices, notes = local_gpus(log, install)
         host = detect_host(args.ram_gib)
         print(f"detected: {len(devices)} GPU(s), {host.ram_bytes / GIB:.0f} GiB of RAM for weights, "
               f"{host.threads} CPU threads (a rig file gives better speed estimates)", file=sys.stderr)
+        for note in notes:
+            print(f"note: {note}", file=sys.stderr)
     for path in getattr(args, "remote", None) or []:
         if path == "auto" or path.startswith("auto:"):
             remote = found_remote(path, wait)
@@ -438,7 +496,7 @@ def _start_there(args: argparse.Namespace, entry: dict, devices, host, log) -> i
     except (LookupError, OSError, ValueError):
         return None  # planned from the file once it is downloaded
     try:
-        plan = make_plan(model, devices, host, context=args.ctx, kv_type=args.kv)
+        plan = make_plan(model, devices, host, context=args.ctx, kv_type=args.kv, chunk=getattr(args, "chunk", "auto"))
     except PlanError:
         return None  # said in full on the usual way
     there = serving_pc(plan, devices)
@@ -485,10 +543,18 @@ def _start_there(args: argparse.Namespace, entry: dict, devices, host, log) -> i
             log(f"  {entry['name']} was added on this PC only: `{PROG} catalog --add {entry['hf_repo']} --quant "
                 f"{entry['hf_quant']}` on the other PC too lets it run there by itself")
         return None
+    run_path = None
     try:
         relay.target = (address, session.port)
         relay.start()
         shown = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
+        try:
+            # `monitor` and the app see the model too: its stages are the other PC's cards, whose readings
+            # they ask of its worker, and its speed comes through the relay.
+            run_path = monitor.write_run(monitor.run_info(plan.on_other_pc, devices, entry["id"], args.host, args.port))
+            monitor.mark_ready(monitor.read_metrics(shown, args.port), run_path)
+        except OSError as e:
+            log(f"note: monitor cannot see this model ({e})")
         log(f"ready: http://{shown}:{args.port}/v1 (the model runs on the PC at {address}; chat at "
             f"http://{shown}:{args.port}/, Ctrl+C stops it there)")
         if args.open:
@@ -501,6 +567,8 @@ def _start_there(args: argparse.Namespace, entry: dict, devices, host, log) -> i
         log("\nstopped; the other PC frees its GPUs")
         return 130
     finally:
+        if run_path is not None:
+            monitor.clear_run(run_path)
         relay.close()
         session.close()
 
@@ -508,10 +576,11 @@ def _start_there(args: argparse.Namespace, entry: dict, devices, host, log) -> i
 def _up(args: argparse.Namespace) -> int:
     """detect -> recommend -> pull -> setup -> plan on the real file -> llama-server."""
     log = lambda s: print(s, file=sys.stderr, flush=True)  # noqa: E731
+    own = getattr(args, "engine", "llama.cpp") == "own"  # GPUEnsemble's own engine instead of llama-server
     try:
         # Someone at the console can walk over to a worker and type y there the first time.
         wait = APPROVAL_WAIT if not args.yes and sys.stdin.isatty() else 0.0
-        devices, host = _hardware(args, wait)
+        devices, host = _hardware(args, wait, install=True)
         host.expert_path = "cpu"  # the plan is carried out by llama.cpp
         entry, path = None, None
         if args.model and args.model.lower().endswith(".gguf"):
@@ -530,7 +599,8 @@ def _up(args: argparse.Namespace) -> int:
                 return 1
             entry = best.entry
         if entry is not None:
-            code = _start_there(args, entry, devices, host, log)
+            # the own engine runs on this PC's cards only
+            code = None if own else _start_there(args, entry, devices, host, log)
             if code is not None:
                 return code
             path = find_local(entry, args.dir)
@@ -541,13 +611,26 @@ def _up(args: argparse.Namespace) -> int:
                     return 1
                 path = pull(entry, base=args.dir)
         exe = args.exe
-        if exe is None:
+        if own:
+            exe = getattr(args, "engine_exe", None) or os.environ.get("GPUENSEMBLE_ENGINE_EXE")
+            if not exe:
+                raise ValueError("--engine own needs --engine-exe (or GPUENSEMBLE_ENGINE_EXE): the path of a gpue-server "
+                                 "built from engine/ (it is not part of the release yet)")
+        elif exe is None:
             inst = installed() or setup(log=log)
             exe = inst.server
         log(f"model: {path}")
         model = _load_model(path)
-        plan = make_plan(model, devices, host, context=args.ctx, kv_type=args.kv)
-        command = llama_command(plan, model, devices, tool="server", threads=host.threads, ram_bytes=host.ram_bytes)
+        plan = make_plan(model, devices, host, context=args.ctx, kv_type=args.kv, chunk=getattr(args, "chunk", "auto"))
+        placement = None
+        if own:
+            # The engine places the layers itself; llama.cpp's plan is kept only to tell which cards to hold
+            # at full clocks (cardhold, boost).
+            placement = engine_placement(model, devices, args.ctx, ram_bytes=host.ram_bytes or None)
+            command = engine_command(model, devices, args.ctx, threads=host.threads, placement=placement)
+            command.notes = []  # format_placement shows them
+        else:
+            command = llama_command(plan, model, devices, tool="server", threads=host.threads, ram_bytes=host.ram_bytes)
     except KeyboardInterrupt:
         log("\nstopped; run up again to continue where it stopped")
         return 130
@@ -555,12 +638,14 @@ def _up(args: argparse.Namespace) -> int:
         log(f"error: {e}")
         return 1
     log("")
-    log(format_plan(plan))
+    log(format_placement(placement) if own else format_plan(plan))
+    if own:
+        log("note: experimental: GPUEnsemble's own engine runs this model instead of llama.cpp")
     for note in command.notes:
         log(f"note: {note}")
     if not _rpc_servers_up(command, log):
         return 1
-    if entry is not None:
+    if entry is not None and not own:
         try:
             fetch_on_workers(plan, path, entry, args.dir, devices, command.cpu_expert_layers, args.weights, log)
         except KeyboardInterrupt:
@@ -570,7 +655,9 @@ def _up(args: argparse.Namespace) -> int:
             log(f"remote: could not ask the other PCs to download their weights ({e}); this PC sends them")
     name = entry["id"] if entry else os.path.splitext(os.path.basename(path))[0]
     extra = ["--host", args.host, "--port", str(args.port), "-a", name]
-    if any(not is_loopback(server) for server in command.rpc_servers) and not {"--cache-ram", "-cram"} & set(args.extra):
+    if own:
+        pass  # gpue-server keeps one conversation on the cards and nothing in RAM; its counters are always on
+    elif any(not is_loopback(server) for server in command.rpc_servers) and not {"--cache-ram", "-cram"} & set(args.extra):
         # llama-server keeps finished conversations in RAM (8 GiB by default) to come back to them without
         # reading the prompt again. For that it copies their KV cache off the cards, and from a card on
         # another PC that is a download: 2 s and 0.1 GB for a 422-token chat with 64 layers there, before
@@ -578,17 +665,33 @@ def _up(args: argparse.Namespace) -> int:
         extra += ["--cache-ram", "0"]
         log("note: finished chats are not kept in RAM (--cache-ram 0): with layers on another PC that would "
             "download their cache over the network before each new chat")
-    if "--metrics" not in args.extra:
+    elif _chat_cache_crowds_ram(plan, host) and not {"--cache-ram", "-cram"} & set(args.extra):
+        # The same cache, on a PC whose RAM the model nearly fills: saving the finished chat pushes the model's
+        # weights out of RAM, and the next prompt waits while they are read back. Measured on the 64 GB
+        # development PC with 50.7 GB of gpt-oss-120b in RAM: 9-32 s more before the first token, none with
+        # --cache-ram 0 (engine/prototype/RESULTS-server.md). The chat in progress is still continued from
+        # the cards' own cache.
+        extra += ["--cache-ram", "0"]
+        log("note: finished chats are not kept in RAM (--cache-ram 0): the model leaves too little RAM free "
+            "for them, and saving them would slow the start of each new chat")
+    if not own and "--metrics" not in args.extra:
         extra.append("--metrics")  # tokens and seconds for `monitor` and the app
     extra += args.extra
     shown = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
-    log(f"starting llama-server with {name}; when it says ready, chat at http://{shown}:{args.port}/ "
-        f"or use the OpenAI-compatible API at http://{shown}:{args.port}/v1 (Ctrl+C stops it)")
+    if own:
+        log(f"starting gpue-server with {name}; when it says ready, use the OpenAI-compatible API at "
+            f"http://{shown}:{args.port}/v1 (it has no chat page; Ctrl+C stops it)")
+    else:
+        log(f"starting llama-server with {name}; when it says ready, chat at http://{shown}:{args.port}/ "
+            f"or use the OpenAI-compatible API at http://{shown}:{args.port}/v1 (Ctrl+C stops it)")
     log("starting: " + command.shell(exe, model=path, extra=extra))
     hold = None if args.no_hold_clocks else cardhold.hold_for(plan, devices, log)
+    boosted = boost.start_for(plan, devices, log) if args.boost else None
     run_path = None
     try:
-        run_path = monitor.write_run(monitor.run_info(plan, devices, name, args.host, args.port))
+        info = (monitor.run_info_own(placement, devices, name, args.host, args.port) if own
+                else monitor.run_info(plan, devices, name, args.host, args.port))
+        run_path = monitor.write_run(info)
     except OSError as e:
         log(f"note: monitor cannot see this model ({e})")
 
@@ -597,7 +700,7 @@ def _up(args: argparse.Namespace) -> int:
         if run_path is not None:
             # The warm-up's requests are not answers: `monitor` counts the speed from here.
             monitor.mark_ready(monitor.read_metrics(shown, port), run_path)
-        if args.open:
+        if args.open and not own:
             url = f"http://{shown}:{port}/"
             log(f"opening {url} in the browser")
             webbrowser.open(url)
@@ -609,6 +712,9 @@ def _up(args: argparse.Namespace) -> int:
             monitor.clear_run(run_path)
         if hold is not None:
             hold.close()
+        if boosted is not None and not boosted.close():
+            log("warning: boost: the clocks may still be locked; they reset when Windows restarts, or with "
+                "`nvidia-smi -rgc` as administrator")
 
 
 def _monitor(args: argparse.Namespace) -> int:
@@ -637,16 +743,29 @@ def _worker(args: argparse.Namespace) -> int:
     try:
         allow = args.allow.split(",") if args.allow else None
         host = args.host or ("0.0.0.0" if args.lan else "127.0.0.1")
-        return worker.start(host, args.port, wanted, args.cache, detect=detect_nvidia,
+        return worker.start(host, args.port, wanted, args.cache, detect=lambda: local_gpus(log, install=True)[0],
                             install=lambda: installed() or setup(log=log), exe=args.exe, log=log,
                             allow=allow, allow_any=args.allow_any, lan=args.lan,
-                            tailnet=None if args.ask_tailscale else tailscale.read_status, serve=args.serve)
+                            tailnet=None if args.ask_tailscale else tailscale.read_status, serve=args.serve,
+                            trust_lan=homelan.HomeLan() if args.trust_lan and args.lan else None)
     except KeyboardInterrupt:
         log("\nstopped")
         return 130
     except (LookupError, RuntimeError, ValueError, OSError) as e:
         log(f"error: {e}")
         return 1
+
+
+# llama-server's --cache-ram default, and what Windows, the server itself and the file cache need beside it.
+CHAT_CACHE_BYTES = 8 * GIB
+CHAT_CACHE_HEADROOM_BYTES = 8 * GIB
+
+
+def _chat_cache_crowds_ram(plan, host) -> bool:
+    """Whether llama-server's cache of finished chats would not fit beside the weights this plan keeps in RAM."""
+    if not plan.cpu_bytes or not host.ram_bytes:
+        return False
+    return host.ram_bytes - plan.cpu_bytes < CHAT_CACHE_BYTES + CHAT_CACHE_HEADROOM_BYTES
 
 
 def _rpc_servers_up(command, log) -> bool:
@@ -668,11 +787,9 @@ def _state(args: argparse.Namespace) -> int:
             if args.ram_gib is not None:
                 host.ram_bytes = int(args.ram_gib * GIB)
         else:
-            try:
-                devices = detect_nvidia()
-            except RuntimeError as e:  # no NVIDIA driver: the app still shows the models and the other PCs
-                notes.append(str(e))
-                devices = []
+            # No GPU here is not an error: the app still shows the models and the other PCs.
+            devices, gpu_notes = local_gpus()
+            notes += gpu_notes
             host = detect_host(args.ram_gib)
         for spec in args.remote or []:
             if spec == "auto" or spec.startswith("auto:"):
@@ -775,11 +892,13 @@ def main(argv: list[str] | None = None) -> int:
 
     p_plan = sub.add_parser("plan", help="place a model on the GPUs and estimate its speed")
     p_plan.add_argument("model")
-    p_plan.add_argument("--rig", help="rig description JSON (default: detect GPUs with nvidia-smi)")
+    p_plan.add_argument("--rig", help="rig description JSON (default: detect this PC's GPUs)")
     p_plan.add_argument("--ctx", type=int, default=8192, help="context length in tokens (default 8192)")
     p_plan.add_argument("--mode", choices=["auto", "whole", "moe"], default="auto")
     p_plan.add_argument("--kv", choices=["auto", "f16", "q8_0", "q4_0"], default="auto",
                         help="KV cache type (default auto: q8_0 only when it is clearly faster)")
+    p_plan.add_argument("--chunk", choices=["auto", "512", "1024", "2048", "4096"], default="auto",
+                        help="tokens of a prompt chunk, llama.cpp -ub (default auto: 512, or longer when weights stay in RAM and it costs generation little)")
     p_plan.add_argument("--ram-gib", type=float, default=None,
                         help="RAM for weights (default: the rig file, or all but max(8 GiB, 20%%) of this PC's RAM)")
     p_plan.add_argument("--split-experts", action="store_true",
@@ -791,10 +910,11 @@ def main(argv: list[str] | None = None) -> int:
     p_run = sub.add_parser("run", help="plan, then start llama.cpp with that placement")
     for p in (p_args, p_run):
         p.add_argument("model")
-        p.add_argument("--rig", help="rig description JSON (default: detect GPUs with nvidia-smi)")
+        p.add_argument("--rig", help="rig description JSON (default: detect this PC's GPUs)")
         p.add_argument("--ctx", type=int, default=8192, help="context length in tokens (default 8192)")
         p.add_argument("--mode", choices=["auto", "whole", "moe"], default="auto")
         p.add_argument("--kv", choices=["auto", "f16", "q8_0", "q4_0"], default="auto")
+        p.add_argument("--chunk", choices=["auto", "512", "1024", "2048", "4096"], default="auto")
         p.add_argument("--ram-gib", type=float, default=None)
         p.add_argument("--tool", choices=["server", "bench"], default="server",
                        help="llama-server/llama-cli (default) or llama-bench argument style")
@@ -856,10 +976,17 @@ def main(argv: list[str] | None = None) -> int:
     p_up.add_argument("--min-speed", type=float, default=MIN_SPEED,
                       help=f"tokens/s the recommended model must reach (default {MIN_SPEED:g})")
     p_up.add_argument("--kv", choices=["auto", "f16", "q8_0", "q4_0"], default="auto")
+    p_up.add_argument("--chunk", choices=["auto", "512", "1024", "2048", "4096"], default="auto",
+                      help="tokens of a prompt chunk, llama.cpp -ub (default auto: 512, or longer when weights stay in RAM and it costs generation little)")
     p_up.add_argument("--ram-gib", type=float, default=None)
     p_up.add_argument("--dir", default=None, help="models folder (default: the GPUEnsemble home)")
     p_up.add_argument("--catalog", help="model catalog JSON (default: the built-in one)")
     p_up.add_argument("--exe", default=None, help="llama-server to use (default: the one `setup` installs)")
+    p_up.add_argument("--engine", choices=["llama.cpp", "own"], default="llama.cpp",
+                      help="what runs the model: llama.cpp (default), or own = GPUEnsemble's own engine (experimental: "
+                           "gpt-oss on this PC's NVIDIA cards only, faster on long prompts, slower at generating)")
+    p_up.add_argument("--engine-exe", default=None,
+                      help="with --engine own: path of gpue-server (default: the GPUENSEMBLE_ENGINE_EXE variable)")
     p_up.add_argument("--host", default="127.0.0.1", help="address to listen on (0.0.0.0 for the LAN)")
     p_up.add_argument("--port", type=int, default=8080)
     p_up.add_argument("--yes", "-y", action="store_true", help="download without asking")
@@ -877,6 +1004,10 @@ def main(argv: list[str] | None = None) -> int:
     p_up.add_argument("--no-hold-clocks", action="store_true",
                       help="do not hold a Vulkan device open on this PC's cards while the model runs (held when "
                            "the model is split, so that the cards keep their clocks while they wait; Windows)")
+    p_up.add_argument("--boost", action="store_true",
+                      help="boost mode: lock the graphics clocks of this PC's cards that run the model (nvidia-smi "
+                           "-lgc) until it stops, so that they do not slow down while they wait; asks for "
+                           "administrator rights; Windows; more power")
     p_up.add_argument("extra", nargs="*", help="extra arguments passed to llama-server (after --)")
     for p in (p_plan, p_args, p_run, p_rec, p_up, p_state):
         p.add_argument("--remote", action="append", metavar="FILE|auto",
@@ -905,7 +1036,7 @@ def main(argv: list[str] | None = None) -> int:
                              "here once, by typing y, and remembered")
     p_work.add_argument("--port", type=int, default=worker.DEFAULT_PORT,
                         help=f"port to listen on (default {worker.DEFAULT_PORT})")
-    p_work.add_argument("--device", help="GPUs to lend, e.g. CUDA0,CUDA1 (default: every NVIDIA GPU)")
+    p_work.add_argument("--device", help="GPUs to lend, e.g. CUDA0,CUDA1 or Vulkan0 (default: every GPU)")
     p_work.add_argument("--cache", action="store_true",
                         help="keep the weights the main PC sends on this PC, so later loads of the same model are fast")
     p_work.add_argument("--serve", action="store_true",
@@ -917,6 +1048,9 @@ def main(argv: list[str] | None = None) -> int:
     p_work.add_argument("--ask-tailscale", action="store_true",
                         help="with --lan: ask here about PCs signed in to Tailscale with this PC's account too "
                              "(default: they are let in without asking)")
+    p_work.add_argument("--trust-lan", action="store_true",
+                        help="with --lan: let main PCs on the same LAN in without asking, when Windows treats that "
+                             "network as private (a home network); type deny <address> to refuse one")
     p_work.add_argument("--allow-any", action="store_true",
                         help="let anyone who can reach --host connect (the RPC server has no password)")
 
@@ -956,7 +1090,9 @@ def main(argv: list[str] | None = None) -> int:
             # llama.cpp keeps a layer's experts on the GPU or in RAM as a whole and cannot stream them
             # over PCIe, so plan for what it can do: `plan` then shows what `up` runs.
             host.expert_path = "cpu"
-        plan = make_plan(model, devices, host, context=args.ctx, mode=args.mode, kv_type=args.kv)
+        # llama-bench's prompt test asks for the logits of every token of a chunk; llama-server for the last one's.
+        host.all_logits = getattr(args, "tool", "server") == "bench"
+        plan = make_plan(model, devices, host, context=args.ctx, mode=args.mode, kv_type=args.kv, chunk=getattr(args, "chunk", "auto"))
         command = llama_command(plan, model, devices, tool=args.tool, threads=host.threads, ram_bytes=host.ram_bytes) if args.command in ("args", "run") else None
     except (GGUFError, PlanError, RuntimeError, ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)

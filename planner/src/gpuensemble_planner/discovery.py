@@ -24,6 +24,20 @@ next start of the worker remembers it.
 
 Trust rests on the main PC's IP address, which suits a home LAN; on a
 network shared with people you do not trust, use a cable of its own.
+With ``worker --trust-lan``, a main PC on the same LAN, on a network Windows
+treats as private, is let in without asking (``homelan``); ``deny <address>``
+refuses one, and is remembered in ``worker.json`` as well.
+
+A main PC that runs a model with a worker's cards asks it now and then how
+they are doing (``monitor``)::
+
+    {"gpuensemble": "cards", "v": 1}
+
+and a worker that lets it in answers with nvidia-smi's readings of the cards
+it lends (``monitor.parse_gpus``'s keys); any other PC gets no answer::
+
+    {"gpuensemble": "cards", "v": 1, "name": "PC2", "port": 50052,
+     "cards": [{"index": 0, "name": "NVIDIA GeForce RTX 4090", "used_gib": 21.3, "temp_c": 64, ...}]}
 
 A worker at another site is reached through a VPN, which no broadcast
 crosses. With Tailscale, the main PC also asks each PC of its tailnet
@@ -49,6 +63,7 @@ from .gate import exclusive
 MAGIC = "gpuensemble"
 VERSION = 1
 MAX_PACKET = 8192
+CARDS = "cards"  # the question about the lent cards' readings
 # PCs asked through a VPN get this long to answer, and a second question on the way: the first
 # packet to a PC the VPN has no path to yet waits for one (Tailscale starts through a relay).
 VPN_TIMEOUT = 3.0
@@ -65,24 +80,54 @@ def allowed_file() -> str:
     return os.path.join(hub.home_dir(), "worker.json")
 
 
-def load_approved(path: str | None = None) -> list[str]:
-    """Addresses approved on earlier runs of the worker."""
+def _read(path: str | None) -> dict:
     try:
         with open(path or allowed_file(), encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
-        return []
-    items = data.get("allow", []) if isinstance(data, dict) else []
-    return [str(a) for a in items if isinstance(a, str)]
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
-def save_approved(addresses: list[str], path: str | None = None) -> None:
+def _write(data: dict, path: str | None) -> None:
     path = path or allowed_file()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"allow": sorted(set(addresses))}, f, indent=2)
+        json.dump(data, f, indent=2)
     os.replace(tmp, path)
+
+
+def _addresses(data: dict, key: str) -> list[str]:
+    items = data.get(key, [])
+    return [str(a) for a in items if isinstance(a, str)] if isinstance(items, list) else []
+
+
+def load_approved(path: str | None = None) -> list[str]:
+    """Addresses approved on earlier runs of the worker."""
+    return _addresses(_read(path), "allow")
+
+
+def save_approved(addresses: list[str], path: str | None = None) -> None:
+    data = _read(path)
+    data["allow"] = sorted(set(addresses))
+    denied = set(_addresses(data, "deny")) - set(addresses)
+    if denied or "deny" in data:
+        data["deny"] = sorted(denied)
+    _write(data, path)
+
+
+def load_denied(path: str | None = None) -> list[str]:
+    """Addresses this PC's user refused: never let in without asking (``--trust-lan``, Tailscale)."""
+    return _addresses(_read(path), "deny")
+
+
+def save_denied(address: str, path: str | None = None) -> None:
+    """Refuse ``address`` from now on: off the approved list, onto the refused one."""
+    data = _read(path)
+    data["allow"] = sorted(set(_addresses(data, "allow")) - {address})
+    data["deny"] = sorted(set(_addresses(data, "deny")) | {address})
+    _write(data, path)
 
 
 class Responder:
@@ -93,13 +138,17 @@ class Responder:
     the approval prompt) and returns whether this PC's user can approve it now. ``gpus`` are the rig entries to hand out, without
     their ``rpc`` address, which the main PC takes from the answer; given as a
     function, it is called for each answer to a PC that is let in, so that the
-    entries can say how much memory the cards have free then.
+    entries can say how much memory the cards have free then. ``cards`` gives
+    the lent cards' readings for a main PC that asks how they are doing;
+    without it, that question gets no answer.
     """
 
     def __init__(self, listen: tuple[str, int], name: str, rpc_port: int,
                  gpus: list[dict] | Callable[[], list[dict]], gate: bool,
                  is_allowed: Callable[[str], bool], on_request: Callable[[str, str], None] | None = None,
-                 log: Callable[[str], None] = lambda s: None) -> None:
+                 log: Callable[[str], None] = lambda s: None,
+                 cards: Callable[[], list[dict]] | None = None) -> None:
+        self.cards = cards
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             exclusive(self.sock)
@@ -133,7 +182,20 @@ class Responder:
             query = json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             return None
-        if not isinstance(query, dict) or query.get(MAGIC) != "find" or query.get("v") != VERSION:
+        if not isinstance(query, dict) or query.get("v") != VERSION:
+            return None
+        if query.get(MAGIC) == CARDS:
+            # Only for a PC that is let in already: asking how the cards are doing is no request to use them.
+            if self.cards is None or not self.is_allowed(peer):
+                return None
+            try:
+                cards = self.cards()
+            except Exception as e:  # noqa: BLE001 - nvidia-smi failed: the main PC goes on without the readings
+                self.log(f"discovery: could not read the cards for {peer} ({e})")
+                return None
+            return json.dumps({MAGIC: CARDS, "v": VERSION, "name": self.name, "port": self.rpc_port,
+                               "cards": cards}).encode("utf-8")
+        if query.get(MAGIC) != "find":
             return None
         allowed = self.is_allowed(peer)
         asking = False
@@ -179,11 +241,14 @@ class Approvals:
     A main PC that asks and is not let in yet is shown with its name and
     address; typing ``y`` (or ``allow <address>``) and Enter lets in the
     last one shown. ``admit(address)`` puts it into the gate's list and the
-    remembered list.
+    remembered list; ``deny <address>`` calls ``refuse(address)``, which
+    takes it out of both and remembers the refusal.
     """
 
-    def __init__(self, admit: Callable[[str], None], log: Callable[[str], None]) -> None:
+    def __init__(self, admit: Callable[[str], None], log: Callable[[str], None],
+                 refuse: Callable[[str], None] | None = None) -> None:
         self.admit = admit
+        self.refuse = refuse
         self.log = log
         self.pending: list[str] = []
         self.lock = threading.Lock()
@@ -198,6 +263,19 @@ class Approvals:
         """Act on one typed line; True if it let a PC in."""
         words = line.strip().split()
         if not words:
+            return False
+        if words[0].lower() == "deny" and len(words) == 2 and self.refuse is not None:
+            address = words[1]
+            try:
+                ipaddress.ip_address(address)
+            except ValueError:
+                self.log(f"{address!r} is not an IP address")
+                return False
+            with self.lock:
+                if address in self.pending:
+                    self.pending.remove(address)
+            self.refuse(address)
+            self.log(f"{address} may no longer use these GPUs (remembered; `allow {address}` lets it in again)")
             return False
         with self.lock:
             if words[0].lower() in ("y", "yes") and self.pending:
@@ -265,7 +343,7 @@ class Found:
         return entries
 
 
-def _local_ipv4() -> list[str]:
+def local_ipv4() -> list[str]:
     found: set[str] = set()
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
@@ -287,7 +365,7 @@ def is_this_pc(found: Found, local: list[str] | None = None, hostname: str | Non
     A broadcast reaches this PC's own worker too; using it would count this
     PC's GPUs twice, once directly and once through the RPC server.
     """
-    if found.address.startswith("127.") or found.address in (local if local is not None else _local_ipv4()):
+    if found.address.startswith("127.") or found.address in (local if local is not None else local_ipv4()):
         return True
     return found.name.lower() == (hostname or socket.gethostname()).lower()
 
@@ -296,7 +374,7 @@ def broadcast_targets(local: list[str] | None = None) -> list[str]:
     """Where to send the question: every network, and each local /24 network
     (Windows sends 255.255.255.255 out of one network card only)."""
     targets = ["255.255.255.255"]
-    for address in local if local is not None else _local_ipv4():
+    for address in local if local is not None else local_ipv4():
         ip = ipaddress.ip_address(address)
         if ip.version == 4 and ip.is_private:
             targets.append(str(ipaddress.ip_network(f"{address}/24", strict=False).broadcast_address))
@@ -409,3 +487,45 @@ def one_address_each(workers: list[Found], far: Callable[[str], bool]) -> list[F
         if key not in best or (not w.allowed, far(w.address)) < (not best[key].allowed, far(best[key].address)):
             best[key] = w
     return sorted(best.values(), key=lambda w: (w.name, w.address))
+
+
+def ask_cards(endpoints: list[str], timeout: float = 1.0) -> dict[str, tuple[str, list[dict]]]:
+    """The readings of the cards that the workers at ``endpoints`` (RPC addresses, host:port) lend.
+
+    Returns endpoint -> (the worker's PC name, its cards) for each worker that
+    answered within ``timeout`` seconds; one that does not let this PC in, or
+    that is older than this question, is left out.
+    """
+    query = json.dumps({MAGIC: CARDS, "v": VERSION}).encode("utf-8")
+    waiting: dict[tuple[str, int], str] = {}
+    out: dict[str, tuple[str, list[dict]]] = {}
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        for endpoint in dict.fromkeys(endpoints):
+            host, _, port = endpoint.rpartition(":")
+            try:
+                rpc_port = int(port)
+                address = socket.getaddrinfo(host.strip("[]"), None, socket.AF_INET)[0][4][0]
+                s.sendto(query, (address, discovery_port(rpc_port)))
+            except (OSError, ValueError, IndexError):
+                continue  # a name that does not resolve, or a network that is down
+            waiting[(address, rpc_port)] = endpoint
+        deadline = time.monotonic() + timeout
+        while waiting and (left := deadline - time.monotonic()) > 0:
+            s.settimeout(left)
+            try:
+                data, peer = s.recvfrom(MAX_PACKET)
+            except ConnectionResetError:
+                continue  # Windows: a PC asked has nothing listening there (ICMP unreachable)
+            except OSError:
+                break  # the deadline (a timeout is an OSError too)
+            try:
+                reply = json.loads(data.decode("utf-8"))
+                key = (peer[0], int(reply["port"]))
+            except (UnicodeDecodeError, ValueError, KeyError, TypeError):
+                continue
+            cards = reply.get("cards") if isinstance(reply, dict) else None
+            if reply.get(MAGIC) != CARDS or key not in waiting or not isinstance(cards, list):
+                continue
+            endpoint = waiting.pop(key)
+            out[endpoint] = (str(reply.get("name", ""))[:64], [c for c in cards if isinstance(c, dict)])
+    return out

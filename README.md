@@ -4,7 +4,7 @@
 
 *Pools the VRAM of several GPUs, in one PC or across PCs, so that models too large for any single card run locally.* **[English README](README.en.md)**
 
-> **状態: pre-alpha。** 推論の実行は llama.cpp の層分割（パイプライン）に任せ、GPUEnsemble は配置プランナとして、この PC に合うモデルを選んでダウンロードし、層の割り振りを決めて llama.cpp を動かし、動いている間の速さと各カードの様子を見せます。別の PC の GPU を足すこともできます（試験段階）。独自のパイプライン実行器は MVP の後の課題です。下の「MVP の完了条件」を満たしたので、これを最初の公開版 v0.1.0 とします。
+> **状態: pre-alpha。** 推論の実行は llama.cpp の層分割（パイプライン）に任せ、GPUEnsemble は配置プランナとして、この PC に合うモデルを選んでダウンロードし、層の割り振りを決めて llama.cpp を動かし、動いている間の速さと各カードの様子を見せます。別の PC の GPU を足すこともできます（試験段階）。独自のパイプライン実行器は MVP の後の課題です。下の「MVP の完了条件」を満たしたので、v0.1.0 を最初の公開版としました。v0.1.1 で GPU のない PC と、AMD・Intel の GPU（Vulkan 経由）に対応しました。
 
 ## 試す（Windows、NVIDIA GPU）
 

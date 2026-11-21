@@ -1,5 +1,5 @@
 {
-  "_comment": "Development rig (E5 PC): 2x Xeon E5-2680 v1 (AVX, no AVX2) + 64 GB DDR3-1600, RTX 2080 Ti (PCIe Gen2 x8, CPU0) + RTX 2080 SUPER (Gen2 x4 via riser, CPU1). GPU and host numbers are effective values fitted to phase 0 llama-bench runs (CUDA 12.4 build, driver 560.94) (benchmarks/phase0-e5-turing.md), not published peaks. PCIe numbers are ~80% of the negotiated link; H2D was not measured. Refitted after phase 1a, where the planner's own placement (output head on the GPU) ran faster, and again after the KV depth sweep with -t 32 and the real Qwen3-32B layer sizes (dense CPU layers 19.6 GB/s + 10 ms per token, attention over the CPU layers' KV cache at 3.0 GB/s for f16 and 1.9 GB/s for q8_0). MoE experts on the CPU were refitted with the weights read into RAM (llama-bench -lm none, as up runs them), because a memory-mapped file adds page faults that skew short runs: 17 GB/s with few experts in RAM, 1.6% slower per GiB of experts there (gpt-oss-120b, 43 GiB of experts in RAM: about 10 GB/s). VRAM limits are the measured edges: the Ti held 36 Qwen3-32B layers at ctx 1152, and the SUPER with the output head fits 6.95 GiB of weights and cache but not 7.0: benchmarks/phase1a-e5-llamacpp.md.",
+  "_comment": "Development rig (E5 PC): 2x Xeon E5-2680 v1 (AVX, no AVX2) + 64 GB DDR3-1600, RTX 2080 Ti (PCIe Gen2 x8, CPU0) + RTX 2080 SUPER (Gen2 x4 via riser, CPU1). GPU and host numbers are effective values fitted to phase 0 llama-bench runs (CUDA 12.4 build, driver 560.94) (benchmarks/phase0-e5-turing.md), not published peaks. PCIe numbers are ~80% of the negotiated link; H2D was not measured. Refitted after phase 1a, where the planner's own placement (output head on the GPU) ran faster, and again after the KV depth sweep with -t 32 and the real Qwen3-32B layer sizes (dense CPU layers 19.6 GB/s + 10 ms per token, attention over the CPU layers' KV cache at 3.0 GB/s for f16 and 1.9 GB/s for q8_0). MoE experts on the CPU were refitted with the weights read into RAM (llama-bench -lm none, as up runs them), because a memory-mapped file adds page faults that skew short runs: 17 GB/s with few experts in RAM, 1.6% slower per GiB of experts there (gpt-oss-120b, 43 GiB of experts in RAM: about 10 GB/s). Refitted again on 2026-11-17 with both cards held at full clocks while they wait for the CPU, as up now does (cardhold): dense CPU layers 25 GB/s (Qwen3.8-27B, 2-9 GiB on the CPU) and experts 23.5 GB/s with few in RAM, same 1.6% per GiB (gpt-oss-120b 43 GiB in RAM 8.53 tok/s, and 22 GiB on three cards 15.4); the earlier values (19.6 and 17) were measured with the cards clocking down: benchmarks/cpu-rates-held.md. VRAM limits are the measured edges: the Ti held 36 Qwen3-32B layers at ctx 1152, and the SUPER with the output head fits 6.95 GiB of weights and cache but not 7.0: benchmarks/phase1a-e5-llamacpp.md.",
   "reserve_gib_per_gpu": 1.0,
   "gpus": [
     {
@@ -18,9 +18,9 @@
   ],
   "host": {
     "ram_for_weights_gib": 52,
-    "cpu_bandwidth_gbs": 19.6,
+    "cpu_bandwidth_gbs": 25,
     "cpu_kv_gbs": {"f16": 3.0, "q8_0": 1.9},
-    "expert_bandwidth_gbs": 17,
+    "expert_bandwidth_gbs": 23.5,
     "expert_slowdown_per_gib": 0.016,
     "expert_path": "auto",
     "cpu_overhead_ms": 10,

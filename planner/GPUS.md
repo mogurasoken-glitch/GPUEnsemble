@@ -5,6 +5,10 @@ uses for detected cards (`src/gpuensemble_planner/gpu_table.py`; `python -m gpue
 prints it). "spec x 0.75" rows are predictions from the published bandwidth; "measured" rows were
 measured with llama.cpp and are used as they are. A rig file's `bandwidth_gbs` overrides both.
 
+AMD Radeon and Intel Arc cards are run through llama.cpp's Vulkan build. Their rows are the
+published figures times 0.75, the share fitted on NVIDIA cards with CUDA; none has been measured
+yet, so their estimates are less sure than the NVIDIA ones.
+
 Cards not in the table are planned at 300 GB/s and their name gets "(bandwidth guessed)".
 A notebook card ("Laptop GPU", "Max-Q") never takes a desktop card's figure. Where one name covers
 several memory sizes, the detected size picks the row.
@@ -211,3 +215,76 @@ the bytes read per token (the model's weights) by the time per token, and set `m
 | p4 | datacenter | Pascal | 8 GB | 192 | 144 | spec x 0.75 |
 | m40 | datacenter | Maxwell | 12 GB | 288 | 216 | spec x 0.75 |
 | m40 | datacenter | Maxwell | 24 GB | 288 | 216 | spec x 0.75 |
+| radeon rx 9070 xt | desktop | RDNA 4 | 16 GB | 640 | 480 | spec x 0.75 |
+| radeon rx 9070 gre | desktop | RDNA 4 | 12 GB | 432 | 324 | spec x 0.75 |
+| radeon rx 9070 | desktop | RDNA 4 | 16 GB | 640 | 480 | spec x 0.75 |
+| radeon rx 9060 xt | desktop | RDNA 4 | 16 GB | 320 | 240 | spec x 0.75 |
+| radeon rx 9060 xt | desktop | RDNA 4 | 8 GB | 320 | 240 | spec x 0.75 |
+| radeon rx 7900 xtx | desktop | RDNA 3 | 24 GB | 960 | 720 | spec x 0.75 |
+| radeon rx 7900 xt | desktop | RDNA 3 | 20 GB | 800 | 600 | spec x 0.75 |
+| radeon rx 7900 gre | desktop | RDNA 3 | 16 GB | 576 | 432 | spec x 0.75 |
+| radeon rx 7800 xt | desktop | RDNA 3 | 16 GB | 624 | 468 | spec x 0.75 |
+| radeon rx 7700 xt | desktop | RDNA 3 | 12 GB | 432 | 324 | spec x 0.75 |
+| radeon rx 7600 xt | desktop | RDNA 3 | 16 GB | 288 | 216 | spec x 0.75 |
+| radeon rx 7600 | desktop | RDNA 3 | 8 GB | 288 | 216 | spec x 0.75 |
+| radeon rx 6950 xt | desktop | RDNA 2 | 16 GB | 576 | 432 | spec x 0.75 |
+| radeon rx 6900 xt | desktop | RDNA 2 | 16 GB | 512 | 384 | spec x 0.75 |
+| radeon rx 6800 xt | desktop | RDNA 2 | 16 GB | 512 | 384 | spec x 0.75 |
+| radeon rx 6800 | desktop | RDNA 2 | 16 GB | 512 | 384 | spec x 0.75 |
+| radeon rx 6750 xt | desktop | RDNA 2 | 12 GB | 432 | 324 | spec x 0.75 |
+| radeon rx 6700 xt | desktop | RDNA 2 | 12 GB | 384 | 288 | spec x 0.75 |
+| radeon rx 6700 | desktop | RDNA 2 | 10 GB | 320 | 240 | spec x 0.75 |
+| radeon rx 6650 xt | desktop | RDNA 2 | 8 GB | 280 | 210 | spec x 0.75 |
+| radeon rx 6600 xt | desktop | RDNA 2 | 8 GB | 256 | 192 | spec x 0.75 |
+| radeon rx 6600 | desktop | RDNA 2 | 8 GB | 224 | 168 | spec x 0.75 |
+| radeon rx 6500 xt | desktop | RDNA 2 | 4 GB | 144 | 108 | spec x 0.75 |
+| radeon rx 5700 xt | desktop | RDNA 1 | 8 GB | 448 | 336 | spec x 0.75 |
+| radeon rx 5700 | desktop | RDNA 1 | 8 GB | 448 | 336 | spec x 0.75 |
+| radeon rx 5600 xt | desktop | RDNA 1 | 6 GB | 336 | 252 | spec x 0.75 |
+| radeon rx 5500 xt | desktop | RDNA 1 | 8 GB | 224 | 168 | spec x 0.75 |
+| radeon rx 5500 xt | desktop | RDNA 1 | 4 GB | 224 | 168 | spec x 0.75 |
+| radeon vii | desktop | GCN 5 | 16 GB | 1024 | 768 | spec x 0.75 |
+| radeon rx vega 64 | desktop | GCN 5 | 8 GB | 484 | 363 | spec x 0.75 |
+| radeon rx vega 56 | desktop | GCN 5 | 8 GB | 410 | 308 | spec x 0.75 |
+| radeon rx 590 | desktop | GCN 4 | 8 GB | 256 | 192 | spec x 0.75 |
+| radeon rx 580 | desktop | GCN 4 | 8 GB | 256 | 192 | spec x 0.75 |
+| radeon rx 580 | desktop | GCN 4 | 4 GB | 224 | 168 | spec x 0.75 |
+| radeon rx 570 | desktop | GCN 4 | 8 GB | 224 | 168 | spec x 0.75 |
+| radeon rx 570 | desktop | GCN 4 | 4 GB | 224 | 168 | spec x 0.75 |
+| radeon rx 480 | desktop | GCN 4 | 8 GB | 256 | 192 | spec x 0.75 |
+| radeon rx 7600m xt | laptop | RDNA 3 | 8 GB | 288 | 216 | spec x 0.75 |
+| radeon rx 7600m | laptop | RDNA 3 | 8 GB | 256 | 192 | spec x 0.75 |
+| radeon rx 6800m | laptop | RDNA 2 | 12 GB | 384 | 288 | spec x 0.75 |
+| radeon rx 6700m | laptop | RDNA 2 | 10 GB | 320 | 240 | spec x 0.75 |
+| radeon ai pro r9700 | workstation | RDNA 4 | 32 GB | 640 | 480 | spec x 0.75 |
+| radeon pro w7900 | workstation | RDNA 3 | 48 GB | 864 | 648 | spec x 0.75 |
+| radeon pro w7800 | workstation | RDNA 3 | 32 GB | 576 | 432 | spec x 0.75 |
+| radeon pro w7700 | workstation | RDNA 3 | 16 GB | 576 | 432 | spec x 0.75 |
+| radeon pro w7600 | workstation | RDNA 3 | 8 GB | 288 | 216 | spec x 0.75 |
+| radeon pro w6800 | workstation | RDNA 2 | 32 GB | 512 | 384 | spec x 0.75 |
+| radeon pro w6600 | workstation | RDNA 2 | 8 GB | 224 | 168 | spec x 0.75 |
+| radeon pro vii | workstation | GCN 5 | 16 GB | 1024 | 768 | spec x 0.75 |
+| mi300x | datacenter | CDNA | 192 GB | 5300 | 3975 | spec x 0.75 |
+| mi250x | datacenter | CDNA | 128 GB | 3277 | 2458 | spec x 0.75 |
+| mi210 | datacenter | CDNA | 64 GB | 1638 | 1228 | spec x 0.75 |
+| mi100 | datacenter | CDNA | 32 GB | 1229 | 922 | spec x 0.75 |
+| mi60 | datacenter | GCN 5 | 32 GB | 1024 | 768 | spec x 0.75 |
+| mi50 | datacenter | GCN 5 | 16 GB | 1024 | 768 | spec x 0.75 |
+| mi50 | datacenter | GCN 5 | 32 GB | 1024 | 768 | spec x 0.75 |
+| mi25 | datacenter | GCN 5 | 16 GB | 484 | 363 | spec x 0.75 |
+| arc b580 | desktop | Xe2 | 12 GB | 456 | 342 | spec x 0.75 |
+| arc b570 | desktop | Xe2 | 10 GB | 380 | 285 | spec x 0.75 |
+| arc a770 | desktop | Xe | 16 GB | 560 | 420 | spec x 0.75 |
+| arc a770 | desktop | Xe | 8 GB | 512 | 384 | spec x 0.75 |
+| arc a750 | desktop | Xe | 8 GB | 512 | 384 | spec x 0.75 |
+| arc a580 | desktop | Xe | 8 GB | 512 | 384 | spec x 0.75 |
+| arc a380 | desktop | Xe | 6 GB | 186 | 140 | spec x 0.75 |
+| arc a310 | desktop | Xe | 4 GB | 124 | 93 | spec x 0.75 |
+| arc a770m | laptop | Xe | 16 GB | 512 | 384 | spec x 0.75 |
+| arc a730m | laptop | Xe | 12 GB | 336 | 252 | spec x 0.75 |
+| arc a550m | laptop | Xe | 8 GB | 224 | 168 | spec x 0.75 |
+| arc a370m | laptop | Xe | 4 GB | 112 | 84 | spec x 0.75 |
+| arc pro b60 | workstation | Xe2 | 24 GB | 456 | 342 | spec x 0.75 |
+| arc pro b50 | workstation | Xe2 | 16 GB | 224 | 168 | spec x 0.75 |
+| arc pro a60 | workstation | Xe | 12 GB | 384 | 288 | spec x 0.75 |
+| arc pro a40 | workstation | Xe | 6 GB | 192 | 144 | spec x 0.75 |

@@ -614,7 +614,7 @@ class WorkerTest(unittest.TestCase):
     def test_gate_in_front_of_the_server(self) -> None:
         # The server moves to 127.0.0.1 on a port of its own; the gate takes
         # the worker's address and lets in only --allow.
-        port = worker.free_port()
+        port = worker.free_ports()
         seen = {}
 
         def fake_server(argv, log):

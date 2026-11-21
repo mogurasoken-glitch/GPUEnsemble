@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from typing import Callable
 
 GIB = 1024**3
 
-from . import gpu_table
+from . import gpu_table, llamabin
 from .gpu_table import GPU_EFFICIENCY  # noqa: F401  (kept importable from here)
 
 @dataclass
@@ -62,6 +65,9 @@ class Host:
     # they are (llama.cpp -ncmoe); "stream" copies the active ones to the GPU
     # over PCIe each token; "auto" picks the faster per stage.
     expert_path: str = "auto"
+    # The program asks for the logits of every token of a prompt chunk (llama-bench's prompt test),
+    # not only the last one's (llama-server): the card with the head then needs room for them.
+    all_logits: bool = False
     # Fixed cost per token when the first layers run on the CPU (graph split,
     # sync, thread wake-up). Fitted on the E5 rig with Qwen3-32B: 10 ms.
     cpu_overhead: float = 0.0
@@ -339,6 +345,175 @@ def detect_nvidia() -> list[Device]:
     return parse_nvidia_smi(out)
 
 
+# --- Cards of any maker, through llama.cpp's Vulkan build -----------------------------------------
+#
+# nvidia-smi knows only NVIDIA cards. AMD Radeon and Intel Arc cards are run by llama.cpp's Vulkan
+# build, which also says what it sees: ``llama-server --list-devices`` prints one line per card,
+# "  Vulkan0: AMD Radeon RX 7900 XTX (24560 MiB, 23012 MiB free)", in the order its -dev numbers
+# them. That is what ``detect_gpus`` reads once ``setup`` has installed the Vulkan build.
+
+_LISTED = re.compile(r"^\s*((?:Vulkan|CUDA|ROCm|SYCL)\d+): (.*) \((\d+) MiB, (\d+) MiB free\)\s*$", re.M)
+
+# Graphics built into the processor share the PC's RAM: not a card to pool, and on a PC that has
+# them only llama.cpp's Vulkan build would offer them (when it finds no other card). Software
+# renderers are left out too.
+_INTEGRATED = re.compile(
+    r"llvmpipe|swiftshader|microsoft basic render"
+    r"|radeon(?:\(tm\))? graphics|radeon(?:\(tm\))? vega \d+|radeon(?:\(tm\))? \d{3,4}[ms]\b"
+    r"|intel.*(?:uhd|iris|hd graphics)|^intel(?:\(r\))? graphics|intel(?:\(r\))? arc(?:\(tm\))? graphics"
+)
+
+
+def is_integrated(name: str) -> bool:
+    """Whether ``name`` is graphics built into the processor (or a software renderer)."""
+    return bool(_INTEGRATED.search(name.lower()))
+
+
+def parse_list_devices(text: str) -> tuple[list[Device], list[str]]:
+    """Cards from ``llama-server --list-devices``, and notes on the ones left out.
+
+    Each card is planned like a detected NVIDIA card: its free memory minus a margin, at most its
+    total minus the reserve; the bandwidth comes from gpu_table.
+    """
+    devices, notes = [], []
+    reserve = Device.__dataclass_fields__["reserve_bytes"].default
+    for m in _LISTED.finditer(text):
+        llama_name, name, total_mib, free_mib = m.group(1), m.group(2).strip(), int(m.group(3)), int(m.group(4))
+        if is_integrated(name):
+            notes.append(f"{llama_name} ({name}) is built into the processor and shares the RAM; it is not used")
+            continue
+        bw = effective_bandwidth(name, total_mib / 1024)
+        label = f"{llama_name} {name}" if bw else f"{llama_name} {name}{GUESSED}"
+        usable = min(total_mib * 1024**2 - reserve, free_mib * 1024**2 - DETECTED_FREE_MARGIN)
+        devices.append(Device(label, max(0, usable) + reserve, bw or 300e9 * GPU_EFFICIENCY,
+                              reserve_bytes=reserve, llama_device=llama_name))
+    return devices, notes
+
+
+# PCI vendor ids of the display adapters (Windows: PNPDeviceID "PCI\VEN_1002&DEV_744C...").
+VENDORS = {"10de": "nvidia", "1002": "amd", "8086": "intel"}
+
+
+@dataclass
+class Adapter:
+    """A display adapter as the operating system lists it, whatever its driver."""
+    name: str
+    vendor: str  # nvidia, amd, intel or other
+
+    @property
+    def pools(self) -> bool:
+        """An AMD or Intel card that llama.cpp's Vulkan build can pool (not graphics built into the CPU)."""
+        return self.vendor in ("amd", "intel") and not is_integrated(self.name)
+
+
+def parse_video_controllers(text: str) -> list[Adapter]:
+    """Adapters from PowerShell's ``Get-CimInstance Win32_VideoController | Select Name,PNPDeviceID | ConvertTo-Json``."""
+    try:
+        data = json.loads(text) if text.strip() else []
+    except ValueError:
+        return []
+    if isinstance(data, dict):  # one adapter: PowerShell gives the object, not a list
+        data = [data]
+    out = []
+    for item in data:
+        if not isinstance(item, dict) or not item.get("Name"):
+            continue
+        m = re.search(r"VEN_([0-9A-Fa-f]{4})", str(item.get("PNPDeviceID") or ""))
+        out.append(Adapter(str(item["Name"]), VENDORS.get(m.group(1).lower(), "other") if m else "other"))
+    return out
+
+
+def _linux_adapters(root: str = "/sys/class/drm") -> list[Adapter]:
+    """AMD cards with their own memory on Linux (amdgpu tells it in mem_info_vram_total)."""
+    out = []
+    for card in sorted(glob.glob(os.path.join(root, "card[0-9]*"))):
+        if "-" in os.path.basename(card):  # card0-DP-1: a connector, not a card
+            continue
+        try:
+            with open(os.path.join(card, "device", "vendor"), encoding="ascii") as f:
+                vendor = VENDORS.get(f.read().strip().lower().removeprefix("0x"), "other")
+        except OSError:
+            continue
+        if vendor != "amd":
+            continue
+        try:
+            with open(os.path.join(card, "device", "mem_info_vram_total"), encoding="ascii") as f:
+                vram = int(f.read().strip())
+        except (OSError, ValueError):
+            continue
+        # A processor's graphics get a small carve-out of the RAM; a card has gigabytes of its own.
+        if vram >= 3 * GIB:
+            out.append(Adapter(f"AMD GPU ({os.path.basename(card)})", "amd"))
+    return out
+
+
+_adapters_cache: list[Adapter] | None = None
+
+
+def adapters(run: Callable = subprocess.run, platform: str | None = None) -> list[Adapter]:
+    """This PC's display adapters (read once per process: cards do not come and go while it runs)."""
+    global _adapters_cache
+    if _adapters_cache is not None:
+        return _adapters_cache
+    platform = platform or sys.platform
+    found: list[Adapter] = []
+    if platform == "win32":
+        try:
+            # UTF-8 both ways: Japanese Windows names its basic display adapter in Japanese, and decoding
+            # PowerShell's output with the console code page (cp932) failed there, which hid every card.
+            out = run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                       "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+                       "Get-CimInstance Win32_VideoController | Select-Object Name,PNPDeviceID | ConvertTo-Json"],
+                      capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+            found = parse_video_controllers(out.stdout or "") if out.returncode == 0 else []
+        except (OSError, subprocess.SubprocessError):
+            found = []
+    elif platform.startswith("linux"):
+        found = _linux_adapters()
+    _adapters_cache = found
+    return found
+
+
+def other_cards(found: list[Adapter] | None = None) -> list[Adapter]:
+    """AMD and Intel cards of this PC that llama.cpp's Vulkan build would pool."""
+    return [a for a in (adapters() if found is None else found) if a.pools]
+
+
+def detect_gpus(install=None, run: Callable = subprocess.run, nvidia: Callable | None = None,
+                others: Callable[[], list[Adapter]] | None = None) -> tuple[list[Device], list[str]]:
+    """This PC's cards, of any maker, and notes for the user; no card at all is not an error.
+
+    * With llama.cpp's Vulkan build installed (``install``), the cards it lists, with its
+      device names (Vulkan0, ...): every maker, in the numbering -dev uses.
+    * Else NVIDIA cards from nvidia-smi (CUDA0, ...), plus a note for any AMD or Intel card,
+      which needs the Vulkan build (``up`` installs it; ``setup --backend vulkan`` does by hand).
+    * A PC without a GPU gives no cards: its layers run on its CPU, or on other PCs' cards.
+    """
+    nvidia = nvidia or detect_nvidia
+    others = others or other_cards
+    notes: list[str] = []
+    if install is not None and install.backend == "vulkan":
+        code, _, text = llamabin.check(install, run)
+        if code == 0:
+            devices, left_out = parse_list_devices(text)
+            return devices, left_out
+        notes.append(f"llama.cpp's Vulkan build did not list the cards (exit code {code}); "
+                     "asking nvidia-smi instead")
+    try:
+        devices = nvidia()
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        devices = []
+    extra = others()
+    if extra:
+        names = ", ".join(a.name for a in extra)
+        notes.append(f"{names}: run through llama.cpp's Vulkan build, which `up` installs when it starts a model "
+                     "(`setup --backend vulkan` does it now); until then the plan leaves them out")
+    if not devices and not extra:
+        notes.append("no GPU found on this PC: the layers it keeps run on its CPU, and the cards of other PCs "
+                     "(--remote auto) take the rest")
+    return devices, notes
+
+
 def physical_ram_bytes() -> int | None:
     """Total RAM of this computer, or None if it cannot be read."""
     if sys.platform == "win32":
@@ -385,6 +560,11 @@ def detect_host(ram_gib: float | None = None) -> Host:
     costs are the E5 rig's measured values (an AVX-only Xeon from 2012), so
     on a newer CPU the estimate errs on the slow side; a rig file fitted to
     measurements is more accurate.
+
+    The CPU rates are for the cards held at full clocks while they wait for the
+    CPU, as ``up`` does (``cardhold``). Fitted before that, with the cards
+    clocking down, they were 19.6 and 17 GB/s and every placement with work on
+    the CPU came out 20-45% slower than it ran (benchmarks/cpu-rates-held.md).
     """
     if ram_gib is not None:
         ram = int(ram_gib * GIB)
@@ -393,8 +573,8 @@ def detect_host(ram_gib: float | None = None) -> Host:
         ram = ram_for_weights(total) if total else 16 * GIB
     return Host(
         ram_bytes=ram,
-        cpu_bandwidth=19.6e9,
-        expert_bandwidth=17e9,
+        cpu_bandwidth=25e9,
+        expert_bandwidth=23.5e9,
         cpu_overhead=0.010,
         layer_overhead=0.03e-3,
         moe_layer_overhead=0.22e-3,

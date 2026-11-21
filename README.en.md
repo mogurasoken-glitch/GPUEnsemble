@@ -4,7 +4,7 @@
 
 **[日本語の README](README.md)**
 
-> **Status: pre-alpha.** Inference runs on llama.cpp's layer split (a pipeline); GPUEnsemble is the placement planner around it: it picks the model that suits this PC, downloads it, decides which layers go where, runs llama.cpp that way, and shows the real speed and each card's state while it runs. GPUs of another PC can be added (experimental). An executor of our own comes after the MVP. The "MVP is done when" condition below is met, and this is the first public version, v0.1.0.
+> **Status: pre-alpha.** Inference runs on llama.cpp's layer split (a pipeline); GPUEnsemble is the placement planner around it: it picks the model that suits this PC, downloads it, decides which layers go where, runs llama.cpp that way, and shows the real speed and each card's state while it runs. GPUs of another PC can be added (experimental). An executor of our own comes after the MVP. The "MVP is done when" condition below is met, v0.1.0 was the first public version; v0.1.1 adds PCs without a GPU and AMD or Intel GPUs (through Vulkan).
 
 ## Try it (Windows, NVIDIA GPUs)
 

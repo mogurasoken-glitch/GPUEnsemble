@@ -300,24 +300,32 @@ class Phase0CalibrationTest(unittest.TestCase):
         self.assertEqual(plan.cpu_layers, 5)
         self.near(plan.tokens_per_second_empty, 7.89)
 
+    def above_unheld(self, estimate: float, measured: float) -> None:
+        """For runs measured before `up` held the cards at full clocks (2026-11-16) and not
+        measured again: the cards then clocked down while they waited for the CPU, and
+        held they ran 14-35% faster in every placement on the E5's two cards with work on
+        the CPU that was measured both ways (benchmarks/cpu-rates-held.md)."""
+        self.assertGreater(estimate, measured)
+        self.assertLess(estimate, measured * 1.35)
+
     def test_qwen3_32b_long_context(self) -> None:
         # -ngl 56 -ts 34/22 -ctk/-ctv q8_0 -t 32: 9 layers on the CPU.
-        # Measured at depth 0 / 4096 / 7552: 4.65 / 3.84 / 3.42. At depth 0 the
-        # same placement with an f16 cache measured 5.03, so allow more there.
+        # Measured at depth 0 / 4096 / 7552 with the cards not held: 4.65 / 3.84 / 3.42.
         plan = self.plan("qwen3-32b-q4_k_m.json", 8192)
         self.assertEqual((plan.kv_type, plan.cpu_layers), ("q8_0", 9))
-        self.near(plan.tokens_per_second_empty, 4.65, tolerance=0.15)
-        self.near(plan.tokens_per_second, 3.84)
-        self.near(plan.tokens_per_second_full, 3.42)
+        self.above_unheld(plan.tokens_per_second_empty, 4.65)
+        self.above_unheld(plan.tokens_per_second, 3.84)
+        self.above_unheld(plan.tokens_per_second_full, 3.42)
 
     # The MoE runs below read the weights into RAM (-lm none --no-host, tg256),
     # as `up` does; with the file memory-mapped, page faults skew short runs.
 
     def test_gpt_oss_120b(self) -> None:
-        # -ts 6/31, experts of layers 0-1 and 6-30 on the CPU, -nopo 1, -t 32:
-        # 6.55, and 6.5-6.6 served by `up`. 43 GiB of experts in RAM.
-        plan = self.plan("gpt-oss-120b.json", 8192)
-        self.near(plan.tokens_per_second_empty, 6.55)
+        # Both cards held at full clocks: -ts 8/29, experts of layers 0-3 and 8-30
+        # on the CPU (43 GiB in RAM), -nopo 1 -fa 1 -t 32: 8.53 (6.33 not held;
+        # 6.55 with -ts 6/31 before the cards were held).
+        plan = self.plan("gpt-oss-120b.json", 8192, chunk=512)  # measured with chunks of 512
+        self.near(plan.tokens_per_second_empty, 8.53)
         self.assertEqual(27, sum(round((1 - s.expert_fraction_on_gpu) * s.n_layers) for s in plan.stages))
 
     def test_gpt_oss_20b(self) -> None:
@@ -325,9 +333,16 @@ class Phase0CalibrationTest(unittest.TestCase):
         self.near(self.plan("gpt-oss-20b.json", 8192).tokens_per_second_empty, 100.3)
 
     def test_qwen3_30b_a3b(self) -> None:
-        # -ts 22/27 -ot blk.(0-3) experts on the CPU, -t 32: 43.6 (runs of
-        # 41.0-47.8; -t 16 gave 37.3).
-        self.near(self.plan("qwen3-30b-a3b-q4_k_m.json", 8192).tokens_per_second_empty, 43.6, tolerance=0.15)
+        # -ts 22/27 -ot blk.(0-3) experts on the CPU, -t 32, cards not held: 43.6
+        # (runs of 41.0-47.8; -t 16 gave 37.3).
+        self.above_unheld(self.plan("qwen3-30b-a3b-q4_k_m.json", 8192).tokens_per_second_empty, 43.6)
+
+    def test_llama_70b(self) -> None:
+        # Both cards held: -ngl 32 -ts 14/18 -fa 1 -t 32 (48 layers on the CPU, the plan
+        # has 49): 0.83 at depth 4096. At depth 0 it ran at 1.37 against 0.94 estimated:
+        # Llama's wider layers run faster per byte on this CPU than Qwen3.8-27B's, which
+        # the CPU rate is fitted to.
+        self.near(self.plan("llama-70b-q4_k_m.json", 8192).tokens_per_second, 0.83)
 
 
 if __name__ == "__main__":

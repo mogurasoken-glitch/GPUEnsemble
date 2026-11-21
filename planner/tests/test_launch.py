@@ -85,7 +85,7 @@ class WorkerLaunchTest(unittest.TestCase):
         typed.flush()
         self.assertTrue(closed.wait(5), out.getvalue())
         typed.close()
-        self.assertEqual(seen["argv"], ["worker", "--lan", "--cache", "--serve", "--device", "CUDA1"])
+        self.assertEqual(seen["argv"], ["worker", "--lan", "--cache", "--serve", "--trust-lan", "--device", "CUDA1"])
         self.assertEqual(seen["approvals"], ["y\n"])
         self.assertEqual(seen["code"], 130)
         self.assertIn("GPUEnsemble worker stopped (exit code 130)", out.getvalue())

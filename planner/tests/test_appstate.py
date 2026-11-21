@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from gpuensemble_planner import cli, hub
+from gpuensemble_planner import cli, devices, hub
 from gpuensemble_planner.discovery import Found
 
 EXAMPLES = os.path.join(os.path.dirname(__file__), "..", "examples")
@@ -53,12 +53,23 @@ class StateTest(unittest.TestCase):
             if not m["fits"]:
                 self.assertTrue(m["error"])
 
-    def test_without_nvidia_driver_it_still_answers(self) -> None:
-        with mock.patch.object(cli, "detect_nvidia", side_effect=RuntimeError("nvidia-smi was not found")):
+    def test_without_any_gpu_it_still_answers(self) -> None:
+        # A PC with 64 GiB of RAM: what fits in RAM depends on it, and the CI's Windows runner has 16.
+        with mock.patch.object(devices, "detect_nvidia", side_effect=RuntimeError("nvidia-smi was not found")), \
+                mock.patch.object(devices, "other_cards", return_value=[]), \
+                mock.patch.object(devices, "physical_ram_bytes", return_value=64 * devices.GIB), \
+                mock.patch.object(cli, "installed", return_value=None):
             code, s, _ = state()
         self.assertEqual(code, 0)
         self.assertEqual(s["gpus"], [])
-        self.assertEqual(s["notes"], ["nvidia-smi was not found"])
+        self.assertEqual(len(s["notes"]), 1)
+        self.assertIn("no GPU found on this PC", s["notes"][0])
+        # Models that fit in RAM run on the CPU alone.
+        cpu_only = [m for m in s["models"] if m["fits"]]
+        self.assertTrue(cpu_only)
+        for m in cpu_only:
+            self.assertEqual(m["layout"]["gpus"], 0)
+            self.assertEqual(m["placement"].split(",")[0], "CPU only")
 
     def test_workers_are_listed_and_their_gpus_named_after_their_pc(self) -> None:
         lends = Found("192.168.10.2", 50052, "pc4090", True, False, WORKER_GPUS)

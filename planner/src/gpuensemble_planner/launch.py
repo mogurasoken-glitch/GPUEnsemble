@@ -3,8 +3,9 @@
 ``Start GPUEnsemble.cmd`` runs ``up --open --remote auto``: it picks, downloads
 and serves the best model for this PC, together with the GPUs that other PCs
 on the LAN lend it. ``Start GPUEnsemble worker.cmd`` runs ``worker --lan --cache
---serve``: it lends this PC's GPUs to the main PC that asks, once its user
-types ``y``, keeps the weights it receives so that later starts load faster,
+--serve --trust-lan``: it lends this PC's GPUs to the main PC that asks, at
+once when that PC is on the same private home LAN, else once its user
+types ``y``; it keeps the weights it receives so that later starts load faster,
 and runs a model that fits on its own GPUs itself when the main PC asks.
 
 Each launcher starts this in its own console window with ``start``, so no
@@ -84,7 +85,8 @@ def main(argv: list[str] | None = None, ask=None, stdin=None) -> int:
         sys.stdin = lines  # the worker's approval prompt reads it
         # Keeping the weights it receives saves sending them again over the LAN at every start;
         # a model that fits on this PC's cards alone runs here from end to end, which is faster.
-        command = ["worker", "--lan", "--cache", "--serve", *args[1:]]
+        # A main PC on the same private home LAN is let in without typing y (homelan).
+        command = ["worker", "--lan", "--cache", "--serve", "--trust-lan", *args[1:]]
         name = "GPUEnsemble worker"
     else:
         # Opening the chat page is what a double-click user wants once it is ready;

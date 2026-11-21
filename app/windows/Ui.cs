@@ -7,32 +7,36 @@ using System.Windows.Forms;
 namespace GPUEnsembleApp
 {
     /// <summary>
-    /// The look of the window: a near-white ground, deep blue ink and buttons, and one color per GPU
-    /// (smoky gold, purple, deep blue, ...), joined by a gradient line under the title bar.
+    /// The look of the window: the colors of <see cref="Palette"/> (a warm charcoal ground with smoky gold buttons by
+    /// default), one color per GPU (smoky gold, purple, blue, ...), joined by a gradient line under the title bar.
     /// </summary>
     static class Ui
     {
-        public static readonly Color Ground = Hex("#F7F7FB");
-        public static readonly Color Surface = Color.White;
-        public static readonly Color Soft = Hex("#EEEFF7");
-        public static readonly Color Line = Hex("#E2E3EE");
-        public static readonly Color Line2 = Hex("#C8CAE0");
-        public static readonly Color Ink = Hex("#121433");
-        public static readonly Color Muted = Hex("#565A7A");
-        public static readonly Color DeepBlue = Hex("#1E2A78");
-        public static readonly Color Purple = Hex("#5B2A86");
-        public static readonly Color Gold = Hex("#B08D3C");
-        public static readonly Color GoldText = Hex("#F3E2B0");
-        public static readonly Color Good = Hex("#0F7B4F");
-        public static readonly Color Bad = Hex("#B3261E");
-        public static readonly Color Idle = Hex("#8A8DA6");
-        public static readonly Color Notice = Hex("#FBF5E6");
-        public static readonly Color NoticeLine = Hex("#E2CC93");
+        /// <summary>The colors in use; chosen once at start (<see cref="UseTheme"/>), before the window is built.</summary>
+        public static Palette Theme { get; private set; } = Palette.Default;
+
+        /// <summary>Uses the named palette (<see cref="Palette.Names"/>); an unknown or empty name keeps the default.</summary>
+        public static void UseTheme(string? name) => Theme = Palette.Named(name) ?? Palette.Default;
+
+        public static Color Ground => Theme.Ground;
+        public static Color Surface => Theme.Surface;
+        public static Color Soft => Theme.Soft;
+        public static Color Hover => Theme.Hover;
+        public static Color Line => Theme.Line;
+        public static Color Line2 => Theme.Line2;
+        public static Color Ink => Theme.Ink;
+        public static Color Muted => Theme.Muted;
+        public static Color DeepBlue => Theme.DeepBlue;
+        public static Color Purple => Theme.Purple;
+        public static Color Gold => Theme.Gold;
+        public static Color Good => Theme.Good;
+        public static Color Bad => Theme.Bad;
+        public static Color Idle => Theme.Idle;
+        public static Color Notice => Theme.Notice;
+        public static Color NoticeLine => Theme.NoticeLine;
 
         /// <summary>One color per GPU (or per PC when there are many), in the order of the model's split.</summary>
-        static readonly Color[] gpuColors = { Gold, Purple, DeepBlue, Hex("#2E7D8C"), Hex("#8C3B5E"), Hex("#4F6B2E"),
-            Hex("#C2703D"), Hex("#3F5FB0"), Hex("#7A4FB5"), Hex("#6B6630"), Hex("#A0525E"), Hex("#2F4A6B") };
-        public static Color GpuColor(int i) => gpuColors[((i % gpuColors.Length) + gpuColors.Length) % gpuColors.Length];
+        public static Color GpuColor(int i) { var c = Theme.Gpus; return c[((i % c.Length) + c.Length) % c.Length]; }
 
         public static Color Hex(string s) => Color.FromArgb(Convert.ToInt32(s.Substring(1, 2), 16), Convert.ToInt32(s.Substring(3, 2), 16), Convert.ToInt32(s.Substring(5, 2), 16));
 
@@ -195,10 +199,13 @@ namespace GPUEnsembleApp
 
         public static string Gib(double gib) => gib >= 10 ? $"{gib:0} GB" : $"{gib:0.#} GB";
 
-        /// <summary>A short name for a card: "RTX 2080 Ti" for "NVIDIA GeForce RTX 2080 Ti 11GB".</summary>
+        /// <summary>A short name for a card: "RTX 2080 Ti" for "NVIDIA GeForce RTX 2080 Ti 11GB",
+        /// "Radeon RX 7900 XTX" for "Vulkan0 AMD Radeon RX 7900 XTX", "Arc B580" for "Vulkan1 Intel(R) Arc(TM) B580 Graphics".</summary>
         public static string ShortGpu(string name)
         {
-            var n = name.Replace("NVIDIA ", "").Replace("GeForce ", "");
+            var n = name.Replace("NVIDIA ", "").Replace("GeForce ", "").Replace("AMD ", "").Replace("Intel(R) ", "")
+                        .Replace("(TM)", "").Replace(" Graphics", "");
+            if (n.StartsWith("Vulkan", StringComparison.Ordinal) && n.IndexOf(' ') > 6 && char.IsDigit(n[6])) n = n.Substring(n.IndexOf(' ') + 1);
             var on = n.IndexOf(" on ", StringComparison.Ordinal);
             if (on > 0) n = n.Substring(0, on);
             if (n.StartsWith("GPU", StringComparison.Ordinal) && n.IndexOf(' ') > 0 && char.IsDigit(n[3])) n = n.Substring(n.IndexOf(' ') + 1);
@@ -312,7 +319,7 @@ namespace GPUEnsembleApp
             var r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
             Color fill, text, edge;
             if (!Enabled) { fill = Ui.Soft; text = Ui.Idle; edge = Ui.Line; }
-            else if (primary) { fill = hover || down ? Ui.Purple : Ui.DeepBlue; text = Ui.GoldText; edge = fill; }
+            else if (primary) { fill = hover || down ? Ui.Theme.ButtonHover : Ui.Theme.Button; text = Ui.Theme.ButtonText; edge = fill; }
             else { fill = hover || down ? Ui.Soft : Ui.Surface; text = Ui.Ink; edge = Ui.Line2; }
             using (var path = Ui.Round(r, Height / 2f))
             {
@@ -401,7 +408,7 @@ namespace GPUEnsembleApp
             this.color = color; this.open = open;
             Margin = new Padding(0);
             Cursor = Cursors.Hand;
-            BackColor = open ? Ui.Hex("#FAFAFD") : Ui.Surface;
+            BackColor = open ? Ui.Theme.OpenRow : Ui.Surface;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         }
 
@@ -412,7 +419,7 @@ namespace GPUEnsembleApp
             var g = e.Graphics;
             g.Clear(BackColor);
             using (var b = new SolidBrush(color)) g.FillRectangle(b, 0, Ui.Px(10), Ui.Px(5), Height - Ui.Px(20));
-            using (var p = new Pen(Ui.Hex("#EEEFF6"))) g.DrawLine(p, 0, Height - 1, Width, Height - 1);
+            using (var p = new Pen(Ui.Theme.RowLine)) g.DrawLine(p, 0, Height - 1, Width, Height - 1);
         }
     }
 
@@ -490,7 +497,7 @@ namespace GPUEnsembleApp
                     {
                         // The next GPU is on the same PC (one color per PC): a thin light line marks the border.
                         using (var b = new SolidBrush(parts[i].color)) g.FillRectangle(b, x, 0, w + 1, Height);
-                        using (var pen = new Pen(Color.FromArgb(150, Color.White))) g.DrawLine(pen, x + w, Ui.Px(3), x + w, Height - Ui.Px(3));
+                        using (var pen = new Pen(Color.FromArgb(150, Ui.Theme.Tick))) g.DrawLine(pen, x + w, Ui.Px(3), x + w, Height - Ui.Px(3));
                         x += w;
                         continue;
                     }
@@ -546,9 +553,9 @@ namespace GPUEnsembleApp
         protected override void OnPaint(PaintEventArgs e)
         {
             if (Width < 2) return;
-            using (var b = new LinearGradientBrush(ClientRectangle, Ui.DeepBlue, Ui.Gold, 0f)
+            using (var b = new LinearGradientBrush(ClientRectangle, Ui.GpuColor(2), Ui.GpuColor(0), 0f)
             {
-                InterpolationColors = new ColorBlend { Colors = new[] { Ui.DeepBlue, Ui.Purple, Ui.Gold }, Positions = new[] { 0f, 0.5f, 1f } },
+                InterpolationColors = new ColorBlend { Colors = new[] { Ui.GpuColor(2), Ui.GpuColor(1), Ui.GpuColor(0) }, Positions = new[] { 0f, 0.5f, 1f } },
             })
                 e.Graphics.FillRectangle(b, ClientRectangle);
         }

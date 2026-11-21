@@ -15,6 +15,7 @@ from gpuensemble_planner.devices import (GIB, RPC_GATE_OVERHEAD, RPC_LAN_OVERHEA
 from gpuensemble_planner.discovery import (Approvals, Found, Responder, broadcast_targets, find_workers, is_this_pc,
                                           measure_rtt, one_address_each, parse_reply)
 from gpuensemble_planner.tailscale import is_tailnet_address
+from gpuensemble_planner.firewall import Network
 from gpuensemble_planner.llamabin import Install
 
 EXAMPLES = os.path.join(os.path.dirname(__file__), "..", "examples")
@@ -30,6 +31,89 @@ def free_udp_port() -> int:
 
 def query(name: str = "main") -> bytes:
     return json.dumps({"gpuensemble": "find", "v": 1, "name": name}).encode()
+
+
+class CardsTest(unittest.TestCase):
+    """A main PC's monitor asks a worker how the cards it lends are doing."""
+
+    CARDS = [{"index": 0, "name": "NVIDIA GeForce RTX 4090", "temp_c": 66, "load": 88}]
+
+    def ask(self) -> bytes:
+        return json.dumps({"gpuensemble": "cards", "v": 1}).encode()
+
+    def test_a_pc_that_is_let_in_gets_the_readings(self) -> None:
+        r = Responder(("127.0.0.1", 0), "pc2", 50052, GPUS, True, lambda peer: True, cards=lambda: self.CARDS)
+        self.addCleanup(r.close)
+        reply = json.loads(r.answer(self.ask(), "192.168.10.1"))
+        self.assertEqual(reply, {"gpuensemble": "cards", "v": 1, "name": "pc2", "port": 50052, "cards": self.CARDS})
+
+    def test_others_get_nothing_and_are_not_asked_about(self) -> None:
+        asked = []
+        r = Responder(("127.0.0.1", 0), "pc2", 50052, GPUS, True, lambda peer: False,
+                      lambda a, n: asked.append(a) or True, cards=lambda: self.CARDS)
+        self.addCleanup(r.close)
+        self.assertIsNone(r.answer(self.ask(), "192.168.10.1"))
+        self.assertEqual(asked, [])  # no approval prompt for a question about the cards
+
+    def test_a_worker_without_readings_or_whose_nvidia_smi_fails_stays_silent(self) -> None:
+        r = Responder(("127.0.0.1", 0), "pc2", 50052, GPUS, True, lambda peer: True)
+        self.addCleanup(r.close)
+        self.assertIsNone(r.answer(self.ask(), "192.168.10.1"))
+
+        def broken():
+            raise RuntimeError("nvidia-smi was not found")
+
+        r = Responder(("127.0.0.1", 0), "pc2", 50052, GPUS, True, lambda peer: True, cards=broken)
+        self.addCleanup(r.close)
+        self.assertIsNone(r.answer(self.ask(), "192.168.10.1"))
+
+    def test_asked_over_the_network(self) -> None:
+        port = free_udp_port()
+        r = Responder(("127.0.0.1", port), "pc4090", port - 1, GPUS, True, lambda peer: peer == "127.0.0.1",
+                      cards=lambda: self.CARDS).start()
+        self.addCleanup(r.close)
+        silent = free_udp_port()  # nothing answers there: an older worker, or none
+        got = discovery.ask_cards([f"127.0.0.1:{port - 1}", f"127.0.0.1:{silent - 1}"], timeout=0.5)
+        self.assertEqual(got, {f"127.0.0.1:{port - 1}": ("pc4090", self.CARDS)})
+        self.assertEqual(discovery.ask_cards([]), {})
+        self.assertEqual(discovery.ask_cards(["no-such-host.invalid:50052"], timeout=0.2), {})
+
+
+class LiveCardsTest(unittest.TestCase):
+    def test_only_the_lent_cards_and_one_reading_per_second(self) -> None:
+        reads = []
+        now = [0.0]
+
+        def read():
+            reads.append(now[0])
+            return [{"index": 0, "name": "A"}, {"index": 1, "name": "B"}, {"index": 2, "name": "C"}]
+
+        lent = [Device("GPU2 C", 8 * GIB, 1e11, llama_device="CUDA2"), Device("GPU0 A", 8 * GIB, 1e11,
+                                                                               llama_device="CUDA0")]
+        cards = worker.LiveCards(lent, read, wait=5.0, clock=lambda: now[0])
+        self.assertEqual([c["name"] for c in cards()], ["A", "C"])
+        now[0] += 0.5
+        cards()
+        self.assertEqual(len(reads), 1)
+        now[0] += 1.0
+        cards()
+        self.assertEqual(len(reads), 2)
+
+    def test_a_failed_reading_keeps_the_last_one(self) -> None:
+        results = [[{"index": 0, "temp_c": 60}], RuntimeError("gone")]
+
+        def read():
+            r = results.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        now = [0.0]
+        cards = worker.LiveCards([Device("GPU0 A", 8 * GIB, 1e11, llama_device="CUDA0")], read, wait=5.0,
+                                 clock=lambda: now[0])
+        self.assertEqual(cards()[0]["temp_c"], 60)
+        now[0] += 2
+        self.assertEqual(cards()[0]["temp_c"], 60)
 
 
 class ResponderTest(unittest.TestCase):
@@ -205,6 +289,26 @@ class ApprovalsTest(unittest.TestCase):
         self.assertFalse(a.handle("allow pc1"))
         self.assertEqual(admitted, ["192.168.10.1", "192.168.10.9"])
 
+    def test_deny(self) -> None:
+        refused, logs = [], []
+        a = Approvals(lambda address: None, logs.append, refused.append)
+        a.request("192.168.10.1", "E5")
+        self.assertFalse(a.handle("deny 192.168.10.1"))
+        self.assertFalse(a.handle("y"))  # no longer waiting
+        self.assertFalse(a.handle("deny pc1"))
+        self.assertEqual(refused, ["192.168.10.1"])
+        self.assertIn("may no longer use these GPUs", logs[-2])
+
+    def test_refusals_are_remembered(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "worker.json")
+            discovery.save_approved(["192.168.10.1", "10.0.0.2"], path)
+            discovery.save_denied("192.168.10.1", path)
+            self.assertEqual(discovery.load_approved(path), ["10.0.0.2"])
+            self.assertEqual(discovery.load_denied(path), ["192.168.10.1"])
+            discovery.save_approved(["10.0.0.2", "192.168.10.1"], path)  # allowed again
+            self.assertEqual(discovery.load_denied(path), [])
+
     def test_remembered(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "sub", "worker.json")
@@ -230,7 +334,7 @@ class LanWorkerTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         open(os.path.join(tmp.name, "ggml-rpc-server.exe"), "w").close()
         approved = os.path.join(tmp.name, "worker.json")
-        port = worker.free_port()
+        port = worker.free_ports()
         read_end, write_end = os.pipe()
         stdin = os.fdopen(read_end, "r")
         typed = os.fdopen(write_end, "w")
@@ -297,7 +401,7 @@ class LanWorkerTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         open(os.path.join(tmp.name, "ggml-rpc-server.exe"), "w").close()
-        port = worker.free_port()
+        port = worker.free_ports()
         logs: list[str] = []
         seen = []
         free = [24.0]
@@ -328,7 +432,7 @@ class LanWorkerTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         open(os.path.join(tmp.name, "ggml-rpc-server.exe"), "w").close()
         approved = os.path.join(tmp.name, "worker.json")
-        port = worker.free_port()
+        port = worker.free_ports()
         logs: list[str] = []
         seen = {}
 
@@ -365,6 +469,120 @@ class LanWorkerTest(unittest.TestCase):
             # Said only where it applies: on a PC that is on a tailnet and lets its own PCs in.
             self.assertEqual(any("through Tailscale" in line for line in logs), tailnet is not None and
                              tailnet() is not None, logs)
+
+
+class FakeHome:
+    """Stands in for homelan.HomeLan: 127.0.0.1 is on the home LAN while ``home`` is True."""
+
+    def __init__(self) -> None:
+        self.home = True
+        self.on_change = None
+
+    def find(self, address, wait=0.0):
+        return Network("Ethernet", "Network 2", "private") if self.home and address == "127.0.0.1" else None
+
+    def start(self):
+        return self
+
+    def close(self) -> None:
+        pass
+
+
+class FreePortsTest(unittest.TestCase):
+    def test_three_in_a_row(self) -> None:
+        first = worker.free_ports(3)
+        for port in range(first, first + 3):
+            for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+                with socket.socket(socket.AF_INET, kind) as s:
+                    s.bind(("127.0.0.1", port))
+
+
+class TrustLanTest(unittest.TestCase):
+    def start_worker(self, run, home, typed="", approved=None):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        open(os.path.join(tmp.name, "ggml-rpc-server.exe"), "w").close()
+        approved = approved or os.path.join(tmp.name, "worker.json")
+        port = worker.free_ports()
+        logs: list[str] = []
+        detected = [Device("GPU0 NVIDIA GeForce RTX 4090", int(24 * GIB), 372e9, llama_device="CUDA0")]
+        read_end, write_end = os.pipe()
+        stdin = os.fdopen(read_end, "r")
+        self.addCleanup(stdin.close)
+        pipe = os.fdopen(write_end, "w")
+        worker.start("127.0.0.1", port, None, False, detect=lambda: detected, install=lambda: FakeInstall(tmp.name),
+                     log=logs.append, out=io.StringIO(), run=lambda argv, log: run(port, pipe, logs),
+                     lan=True, stdin=stdin, approved_path=approved, trust_lan=home)
+        pipe.close()
+        return logs, approved
+
+    def test_a_pc_on_the_home_lan_is_let_in_without_asking(self) -> None:
+        seen = {}
+
+        def run(port, typed, logs):
+            [seen["w"]] = find_workers(at=["127.0.0.1"], port=port + 1, timeout=2)
+            return 0
+        logs, approved = self.start_worker(run, FakeHome())
+        self.assertTrue(seen["w"].allowed)
+        self.assertFalse(any("Type y" in line for line in logs), logs)
+        self.assertTrue(any("is on this PC's home network 'Network 2' (Ethernet), which Windows treats as private; "
+                            "it may use these GPUs" in line for line in logs), logs)
+        self.assertTrue(any("let in without asking when Windows treats that network as private" in line
+                            for line in logs), logs)
+        self.assertEqual(discovery.load_approved(approved), [])  # asked about again on the next start
+
+    def test_not_on_a_home_lan_it_is_asked_about(self) -> None:
+        home = FakeHome()
+        home.home = False
+        seen = {}
+
+        def run(port, typed, logs):
+            [seen["w"]] = find_workers(at=["127.0.0.1"], port=port + 1, timeout=2)
+            return 0
+        logs, _ = self.start_worker(run, home)
+        self.assertFalse(seen["w"].allowed)
+        self.assertTrue(seen["w"].asking)
+
+    def test_refused_and_remembered(self) -> None:
+        seen = {}
+
+        def run(port, typed, logs):
+            [seen["before"]] = find_workers(at=["127.0.0.1"], port=port + 1, timeout=2)
+            typed.write("deny 127.0.0.1\n")
+            typed.flush()
+            deadline = time.monotonic() + 5
+            while not any("may no longer use" in line for line in logs) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            [seen["after"]] = find_workers(at=["127.0.0.1"], port=port + 1, timeout=2)
+            return 0
+        logs, approved = self.start_worker(run, FakeHome())
+        self.assertTrue(seen["before"].allowed)
+        self.assertFalse(seen["after"].allowed)
+        self.assertEqual(discovery.load_denied(approved), ["127.0.0.1"])
+
+        # The next start does not let it in by itself, and says why.
+        def again(port, typed, logs):
+            [seen["next"]] = find_workers(at=["127.0.0.1"], port=port + 1, timeout=2)
+            return 0
+        logs, _ = self.start_worker(again, FakeHome(), approved=approved)
+        self.assertFalse(seen["next"].allowed)
+        self.assertFalse(seen["next"].asking)
+        self.assertTrue(any("was refused here before and is not let in" in line for line in logs), logs)
+
+    def test_a_network_that_stops_being_home(self) -> None:
+        home = FakeHome()
+        seen = {}
+
+        def run(port, typed, logs):
+            [seen["before"]] = find_workers(at=["127.0.0.1"], port=port + 1, timeout=2)
+            home.home = False
+            home.on_change()
+            [seen["after"]] = find_workers(at=["127.0.0.1"], port=port + 1, timeout=2)
+            return 0
+        logs, _ = self.start_worker(run, home)
+        self.assertTrue(seen["before"].allowed)
+        self.assertFalse(seen["after"].allowed)
+        self.assertTrue(any("no longer on a private network" in line for line in logs), logs)
 
 
 class CliAutoTest(unittest.TestCase):

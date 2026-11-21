@@ -93,11 +93,51 @@ SEQUENCES = 4
 # llama.cpp keeps, for a layer with a sliding window of n tokens, room for n tokens of each sequence
 # and one batch (llama_kv_cache_iswa), not the whole context.
 UBATCH = 512
+# Larger prompt chunks (llama.cpp -ub) to try, largest first, when part of the model stays in RAM.
+# A prompt chunk copies the CPU's weights to the first GPU once (op offload), whatever its size, so a
+# chunk four times as long shares that copy among four times the tokens. On the E5 rig
+# (engine/PLAN.md, 2026-11-18): Qwen3.8-27B with 8 CPU layers read a 4096-token prompt at 250
+# tokens/s with 512-token chunks and at 497 with 2048; gpt-oss-120b at 49 (experts computed on the
+# CPU) and at 117. Generation was the same when the placement was.
+LARGER_UBATCHES = (4096, 2048, 1024)
+# Generation may get this much slower, by the estimate, for the VRAM the longer chunks take.
+# Llama 3.3 70B on the E5 rig with chunks of 1024 (two more layers on the CPU, estimate -3.6%):
+# a 4096-token prompt at 52 tokens/s instead of 35.5, generation at 1.28 instead of 1.35. For an
+# answer of a few hundred tokens that is no gain, so such a plan keeps 512 unless asked.
+CHUNK_GEN_COST = 0.03
+# llama.cpp's batch size (-b) to go with a larger chunk.
+BATCH_FOR_LARGER_UBATCH = 4096
+# For a MoE model with longer chunks: prompts shorter than this many tokens are computed on the CPU
+# instead of copying their experts to the GPU (llama.cpp reads GGML_OP_OFFLOAD_MIN_BATCH; its
+# default is 32). gpt-oss-120b on the E5 rig, chunks of 1024: a 256-token prompt at 41 tokens/s
+# instead of 20, a 4096-token one at 62 instead of 70 (49.5 with chunks of 512 on the CPU).
+MOE_OFFLOAD_MIN_BATCH = 600
+# The chunk a MoE model with experts in RAM gets when none is asked for (if it fits the context and the VRAM).
+MOE_AUTO_UBATCH = 4096
+# ... and only while the estimate of generation drops by at most this much. gpt-oss-120b on the E5 rig:
+# estimate -8%, measured -4%. Qwen3-30B-A3B there would lose about 15% by the estimate (not measured), so it keeps 512.
+MOE_CHUNK_GEN_COST = 0.10
+# VRAM a GPU's compute buffer takes for each token of a chunk beyond the 512 that the fixed reserve
+# covers. Measured on the E5 rig per token: 0.14 MiB (gpt-oss-120b) and 0.34 MiB (Qwen3.8-27B) on a
+# card without the head, and on the card with the head the logits (4 bytes for each vocabulary
+# entry) plus up to 0.4 MiB. With 0.7 for the first, gpt-oss-120b at 2048 left 1.8 GB of the 2080
+# SUPER unused and generation fell from 11.8 to 8.1 tokens/s.
+#
+# The logits are only needed when every token of the chunk gets an output: llama-bench's prompt test
+# does that, llama-server asks for the last token's alone. Under llama-server the compute buffer of
+# gpt-oss-120b on the E5 rig was the same on both cards (4096-token chunks: 1182 MiB on the card with
+# the head, 1208 MiB on the other; 865 MiB at 2048), so a plan for the server does not set the logits
+# aside (``all_logits=False``): with them, chunks of 2048 left 1 GB of the 2080 Ti unused
+# (engine/prototype/RESULTS-server-stock.md).
+CHUNK_BYTES_PER_TOKEN = 0.4 * 2**20
+CHUNK_BYTES_PER_TOKEN_WITH_HEAD = 0.45 * 2**20
+# Logits per token when the vocabulary size is not known.
+DEFAULT_LOGITS_BYTES = 0.8 * 2**20
 
 
-def window_tokens(window: int, context: int) -> int:
+def window_tokens(window: int, context: int, ubatch: int = UBATCH) -> int:
     """Tokens of KV cache a layer holds: the whole context, or less for a sliding window."""
-    return context if window <= 0 else min(context, window * SEQUENCES + UBATCH)
+    return context if window <= 0 else min(context, window * SEQUENCES + ubatch)
 
 
 class PlanError(RuntimeError):
@@ -141,6 +181,7 @@ class Plan:
     seconds_empty: float = 0.0  # first token after an empty context
     seconds_full: float = 0.0  # last token of a full context
     expert_ram_bytes: int = 0  # routed expert weights kept in RAM (CPU layers and uncached experts)
+    ubatch: int = UBATCH  # tokens of a prompt chunk (llama.cpp -ub); see LARGER_UBATCHES
     # Set when one other PC holds the whole model on its cards alone: that PC's address, its RPC
     # server ("host:port"), the plan that PC would make for itself, and that plan's time per token
     # (same context as seconds_per_token). See ``other_pc_note``.
@@ -173,7 +214,8 @@ def _rate(seconds: float) -> float:
 class _Prefix:
     """Prefix sums over the layers so any stage [s, e) is priced in O(1)."""
 
-    def __init__(self, model: ModelProfile, context: int, kv_scale: float = 1.0) -> None:
+    def __init__(self, model: ModelProfile, context: int, kv_scale: float = 1.0, ubatch: int = UBATCH,
+                 all_logits: bool = False) -> None:
         self.dense = [0]
         self.experts = [0]
         self.kv = [0]
@@ -182,6 +224,11 @@ class _Prefix:
         # Compute buffer that every GPU needs on top of its fixed reserve.
         widest = max((layer.kv_bytes_per_token for layer in model.layers), default=0)
         self.compute = context * (widest + MASK_BYTES_PER_TOKEN)
+        # What a chunk longer than 512 tokens adds to it: on every GPU, and on the one with the head.
+        extra = max(0, ubatch - UBATCH)
+        self.chunk = int(extra * CHUNK_BYTES_PER_TOKEN)
+        logits = (model.logits_bytes or DEFAULT_LOGITS_BYTES) if all_logits else 0
+        self.chunk_with_head = int(extra * (CHUNK_BYTES_PER_TOKEN_WITH_HEAD + logits))
         for w in {layer.kv_window for layer in model.layers if layer.kv_window > 0}:
             self.windows[w] = [0.0]
         for layer in model.layers:
@@ -189,7 +236,7 @@ class _Prefix:
             self.experts.append(self.experts[-1] + layer.expert_bytes)
             # The cache grows with the context (up to its window); a recurrent layer's state does not,
             # and is not quantized.
-            self.kv.append(self.kv[-1] + int(layer.kv_bytes_per_token * window_tokens(layer.kv_window, context) * kv_scale)
+            self.kv.append(self.kv[-1] + int(layer.kv_bytes_per_token * window_tokens(layer.kv_window, context, ubatch) * kv_scale)
                            + layer.state_bytes * SEQUENCES)
             whole = 0.0 if layer.kv_window > 0 else layer.kv_bytes_per_token * kv_scale
             self.kv_token.append(self.kv_token[-1] + whole)
@@ -227,7 +274,9 @@ def _ram_expert_seconds(active_bytes: float, dev: Device, host: Host) -> tuple[f
 
 def _capacity(dev: Device, host: Host, pre: _Prefix, is_last: bool) -> int:
     """Bytes of weights, KV cache and head that ``dev`` can take."""
-    return dev.usable_bytes - pre.compute - (host.last_stage_reserve if is_last else 0)
+    chunk = pre.chunk_with_head if is_last else pre.chunk
+    # Not below zero: a card too small for the buffers still counts as a stage without layers.
+    return max(0, dev.usable_bytes - pre.compute - chunk) - (host.last_stage_reserve if is_last else 0)
 
 
 def _stage_cost(
@@ -312,10 +361,11 @@ def _plan_order(
     mode: str,
     kv_type: str = "f16",
     depth: int = 0,
+    ubatch: int = UBATCH,
 ) -> Plan | None:
     n = model.n_layers
     k = len(order)
-    pre = _Prefix(model, context, KV_SCALE[kv_type])
+    pre = _Prefix(model, context, KV_SCALE[kv_type], ubatch, all_logits=host.all_logits)
     active = model.active_expert_ratio
     cpu_kv = host.kv_bandwidth(kv_type)
 
@@ -336,6 +386,19 @@ def _plan_order(
     for c in range(n + 1):
         if cpu_ram(c) + model.embed_bytes <= host.ram_bytes:
             best[0][c] = cpu_seconds(c) + (host.cpu_overhead if c else 0.0)
+    if k == 0:
+        # No GPU at all (a PC without one, and no other PC's cards): every layer and the head on the CPU.
+        head = model.head_bytes
+        if best[0][n] == inf or cpu_ram(n) + model.embed_bytes + head > host.ram_bytes:
+            return None
+        total = cpu_seconds(n) + head / host.cpu_bandwidth
+        return Plan(
+            model=model.name, mode=mode, context=context, stages=[], cpu_layers=n,
+            cpu_bytes=cpu_ram(n) + model.embed_bytes + head, seconds_per_token=total, kv_type=kv_type,
+            depth=depth, seconds_empty=cpu_seconds(n, 0) + head / host.cpu_bandwidth,
+            seconds_full=cpu_seconds(n, context) + head / host.cpu_bandwidth,
+            expert_ram_bytes=pre.span(0, n)[1],
+        )
     for j, dev in enumerate(order, start=1):
         is_last = j == k
         for i in range(n + 1):
@@ -422,18 +485,37 @@ def _plan_order(
         seconds_empty=total_at(0),
         seconds_full=total_at(context),
         expert_ram_bytes=expert_ram,
+        ubatch=ubatch,
     )
 
 
-def streams_cpu_weights(plan: Plan, model: ModelProfile) -> bool:
+def streams_cpu_weights(plan: Plan, model: ModelProfile, devices: list[Device] | None = None) -> bool:
     """Whether prompt processing copies the CPU's weights to a GPU.
 
     llama.cpp's op offload sends the weights of CPU layers to the first GPU
     for every prompt batch, over that GPU's PCIe link. For MoE experts kept on
     the CPU this is slower than computing them there on the E5 rig (phase 1a:
-    pp 16 vs 42 tokens/s), so the launcher turns it off for MoE models.
+    pp 16 vs 42 tokens/s) with chunks of 512 tokens, so the launcher turns it
+    off for MoE models unless the plan uses larger chunks (``Plan.ubatch``). It is
+    off too when the first card is on another PC (as on a main PC without a
+    GPU), where the weights would cross the network for every batch, and when
+    there is no card at all.
     """
-    return plan.cpu_layers > 0 and not model.is_moe
+    if model.is_moe:
+        # With chunks of 512 tokens the CPU is faster for experts; with larger ones the copy wins
+        # (LARGER_UBATCHES), also for experts left in RAM by layers that are on a GPU.
+        if plan.ubatch <= UBATCH or not (plan.cpu_layers or plan.expert_ram_bytes):
+            return False
+    elif plan.cpu_layers == 0:
+        return False
+    first = next((s for s in plan.stages if s.n_layers), None)
+    if first is None:
+        return False
+    if devices is not None:
+        dev = next((d for d in devices if d.name == first.device), None)
+        if dev is not None and dev.is_remote:
+            return False
+    return True
 
 
 def _first_link(plan: Plan, devices: list[Device]) -> float:
@@ -610,10 +692,11 @@ def make_plan(
     mode: str = "auto",
     kv_type: str = "auto",
     depth: int | None = None,
+    chunk: int | str = "auto",
 ) -> Plan:
     """Find the fastest placement that fits (see ``_plan_here``), and say so when one other PC
     would run the model faster on its cards alone (``other_pc_note``)."""
-    plan = _plan_here(model, devices, host, context, mode, kv_type, depth)
+    plan = _plan_here(model, devices, host, context, mode, kv_type, depth, chunk)
     note = other_pc_note(plan, model, devices, host, kv_type)
     if note:
         plan.notes.append(note)
@@ -628,6 +711,7 @@ def _plan_here(
     mode: str = "auto",
     kv_type: str = "auto",
     depth: int | None = None,
+    chunk: int | str = "auto",
 ) -> Plan:
     """Find the fastest placement that fits.
 
@@ -638,11 +722,17 @@ def _plan_here(
     whole, and ``moe`` otherwise. ``kv_type="auto"`` keeps the KV cache in f16
     unless a q8_0 cache lets more layers onto the GPUs and is clearly faster
     (on the E5 rig, Qwen3-32B at 8192 tokens of context).
+
+    ``chunk="auto"`` reads prompts in chunks of 512 tokens, or in longer ones
+    (``LARGER_UBATCHES``) when a dense model has layers on the CPU and the VRAM
+    the longer chunks take costs generation at most ``CHUNK_GEN_COST``. A MoE
+    model with experts in RAM gets chunks of ``MOE_AUTO_UBATCH`` when they fit.
+    A number asks for that size.
     """
     if kv_type == "auto":
         plain = None
         try:
-            plain = _plan_here(model, devices, host, context, mode, "f16", depth)
+            plain = _plan_here(model, devices, host, context, mode, "f16", depth, chunk)
         except PlanError:
             pass
         if plain is not None and plain.cpu_layers == 0 and not (plain.mode == "moe" and model.is_moe):
@@ -652,7 +742,7 @@ def _plan_here(
             # the VRAM estimate (Qwen3-32B at ctx 640), so keep f16.
             return plain
         try:
-            small = _plan_here(model, devices, host, context, mode, "q8_0", depth)
+            small = _plan_here(model, devices, host, context, mode, "q8_0", depth, chunk)
         except PlanError:
             if plain is None:
                 raise
@@ -661,7 +751,67 @@ def _plan_here(
             small.notes.append("KV cache in q8_0 (half the VRAM of f16, close to lossless) to keep more layers on the GPUs")
             return small
         return plain
-    plan = _make_plan(model, devices, host, context, mode, kv_type, depth)
+    plan = _plan_chunk(model, devices, host, context, mode, kv_type, depth, UBATCH)
+    if not wants_larger_chunks(plan, devices):
+        if chunk not in ("auto", UBATCH, str(UBATCH)):
+            plan.notes.append(f"prompt chunks stay at {UBATCH} tokens: longer ones only help when weights stay in "
+                              "RAM and every card is in this PC")
+        return plan
+    # Part of the model stays in RAM: longer prompt chunks read prompts faster but take VRAM, so
+    # use the longest that costs generation little.
+    asked = chunk != "auto"
+    # Experts in RAM: only the longest chunk is tried by itself. gpt-oss-120b on the E5 rig
+    # (engine/prototype/RESULTS-server-stock.md, result 5): with chunks of 4096 an 8000-token prompt
+    # answers after 41 s instead of 166 s, a 190-token follow-up after 5.2 s instead of 4.4 s
+    # (``llamacpp`` keeps short prompts on the CPU), generation at 10.5 tokens/s instead of 11.0.
+    # With chunks of 2048 the placement generated at 9.5, so the sizes in between are only used when asked for.
+    moe_auto = model.is_moe and not asked
+    sizes = [int(chunk)] if asked else [MOE_AUTO_UBATCH] if moe_auto else list(LARGER_UBATCHES)
+    for ubatch in sizes:
+        if ubatch <= UBATCH or ubatch * 2 > context:
+            continue  # a chunk is at most the context; leave room for the answer
+        try:
+            larger = _plan_chunk(model, devices, host, context, mode, kv_type, depth, ubatch)
+        except PlanError:
+            continue
+        if not streams_cpu_weights(larger, model, devices):
+            continue
+        cost = MOE_CHUNK_GEN_COST if moe_auto else CHUNK_GEN_COST
+        if asked or larger.seconds_per_token <= plan.seconds_per_token * (1 + cost):
+            larger.notes.append(
+                f"prompts are read in chunks of {ubatch} tokens instead of {UBATCH}: each chunk copies the "
+                "weights kept in RAM to the first GPU once, so long prompts are read faster (short ones a "
+                "little slower); the longer chunks take some VRAM")
+            return larger
+    return plan
+
+
+def wants_larger_chunks(plan: Plan, devices: list[Device]) -> bool:
+    """Whether a plan could read prompts faster in longer chunks (``LARGER_UBATCHES``).
+
+    Only when weights stay in RAM (CPU layers, or experts of layers on a GPU)
+    and every card is in this PC: with a card on another PC it has not been
+    measured.
+    """
+    if not (plan.cpu_layers or plan.expert_ram_bytes):
+        return False
+    by_name = {d.name: d for d in devices}
+    used = [by_name[s.device] for s in plan.stages if s.n_layers]
+    return bool(used) and not any(d.is_remote for d in used)
+
+
+def _plan_chunk(
+    model: ModelProfile,
+    devices: list[Device],
+    host: Host,
+    context: int,
+    mode: str,
+    kv_type: str,
+    depth: int | None,
+    ubatch: int,
+) -> Plan:
+    """The fastest placement that fits for one KV cache type and one prompt chunk size."""
+    plan = _make_plan(model, devices, host, context, mode, kv_type, depth, ubatch)
     if not host.expert_slowdown_per_gib:
         return plan
     # The CPU's rate for experts depends on how many of them the plan leaves in
@@ -669,7 +819,7 @@ def _plan_here(
     tried: set[int] = set()
     while plan.expert_ram_bytes and plan.expert_ram_bytes not in tried and len(tried) < 4:
         tried.add(plan.expert_ram_bytes)
-        plan = _make_plan(model, devices, slowed_host(host, plan.expert_ram_bytes), context, mode, kv_type, depth)
+        plan = _make_plan(model, devices, slowed_host(host, plan.expert_ram_bytes), context, mode, kv_type, depth, ubatch)
     return plan
 
 
@@ -687,12 +837,11 @@ def _make_plan(
     mode: str,
     kv_type: str,
     depth: int | None,
+    ubatch: int = UBATCH,
 ) -> Plan:
     """The fastest placement that fits, for one KV cache type and the host as given."""
     if kv_type not in KV_SCALE:
         raise PlanError(f"unknown KV cache type {kv_type!r}; use auto, {', '.join(KV_SCALE)}")
-    if not devices:
-        raise PlanError("no GPUs given")
     if mode not in ("auto", "whole", "moe"):
         raise PlanError(f"unknown mode {mode!r}")
     modes = [mode] if mode != "auto" else (["whole", "moe"] if model.is_moe else ["whole"])
@@ -703,20 +852,20 @@ def _make_plan(
     plans: list[Plan] = []
     for m in modes:
         for order in _orders(devices):
-            plan = _plan_order(model, order, host, context, m, kv_type, depth)
+            plan = _plan_order(model, order, host, context, m, kv_type, depth, ubatch)
             if plan is not None:
                 plans.append(plan)
     best: Plan | None = None
     if plans:
         # Prefer plans with no CPU layers, then the fastest one.
         best = min(plans, key=lambda p: (p.cpu_layers > 0, p.seconds_per_token))
-        if streams_cpu_weights(best, model):
+        if streams_cpu_weights(best, model, devices):
             # Prompt batches stream the CPU's weights over the first GPU's link,
             # so among plans about as fast, take the one with the fastest link first
             # (phase 1a: Qwen3-32B pp 199 -> 278 tokens/s, tg 7.62 -> 7.54).
             close = [
                 p for p in plans
-                if p.cpu_layers > 0 and p.seconds_per_token <= best.seconds_per_token * (1 + PROMPT_TIE)
+                if (p.cpu_layers > 0 or p.expert_ram_bytes) and p.seconds_per_token <= best.seconds_per_token * (1 + PROMPT_TIE)
             ]
             fastest_link = max(close, key=lambda p: (_first_link(p, devices), -p.seconds_per_token))
             if _first_link(fastest_link, devices) > _first_link(best, devices):
@@ -731,7 +880,9 @@ def _make_plan(
             f"{model.name} does not fit: it needs about {model.total_weight_bytes / 1024**3:.1f} GiB of weights "
             f"plus KV cache, and the GPUs and RAM offer {total / 1024**3:.1f} GiB"
         )
-    if best.cpu_layers:
+    if not devices:
+        best.notes.append("no GPU: the whole model runs on this PC's CPU")
+    elif best.cpu_layers:
         best.notes.append(
             f"{best.cpu_layers} layers stay on the CPU; they will dominate the time per token"
         )

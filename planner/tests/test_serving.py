@@ -297,7 +297,7 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual(exe, os.path.join("/opt/llama", "llama-server"))
         self.assertEqual(path, "/models/qwen.gguf")
         # Bound to this PC only: the gate is what the main PC reaches.
-        self.assertEqual(extra, ["--host", "127.0.0.1", "--port", "51234", "-a", "qwen3-32b"])
+        self.assertEqual(extra, ["--host", "127.0.0.1", "--port", "51234", "-a", "qwen3-32b", "--metrics"])
         self.assertNotIn("--rpc", command.args)
         self.assertEqual(command.args[command.args.index("-c") + 1], "8192")
         self.assertTrue(options["warmup"])
@@ -348,7 +348,7 @@ class WorkerStartTest(Timed):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         open(os.path.join(tmp.name, "ggml-rpc-server.exe"), "w").close()
-        self.port = worker.free_port()
+        self.port = worker.free_ports()
         self.cards = [Device("GPU0 NVIDIA GeForce RTX 4090", int(24 * GIB), 372e9, llama_device="CUDA0"),
                       Device("GPU1 NVIDIA GeForce RTX 3060", int(12 * GIB), 270e9, llama_device="CUDA1")]
         self.launched: list[tuple] = []
@@ -360,12 +360,19 @@ class WorkerStartTest(Timed):
             return 130
 
         out, logs = io.StringIO(), []
+        self.logs = logs
         with mock.patch.dict(os.environ, {"GPUENSEMBLE_HOME": tmp.name}):
             code = worker.start("127.0.0.1", self.port, ["CUDA0"], False, detect=lambda: list(self.cards),
                                 install=lambda: FakeInstall(tmp.name), log=logs.append, out=out,
                                 run=lambda argv, log: ask() or 0, serve=serve, launch=launch)
         self.assertEqual(code, 0)
         return json.loads(out.getvalue())["gpus"], logs
+
+    def find_one(self):
+        """The worker as a main PC finds it; when it does not answer, the worker's own lines say why."""
+        found = find_workers(at=["127.0.0.1"], port=self.port + 1, timeout=2)
+        self.assertEqual(len(found), 1, f"the worker on port {self.port} did not answer; it said: {self.logs}")
+        return found[0]
 
     @staticmethod
     def without_address(entries: list[dict]) -> list[dict]:
@@ -375,7 +382,7 @@ class WorkerStartTest(Timed):
         seen = {}
 
         def ask() -> None:
-            [found] = find_workers(at=["127.0.0.1"], port=self.port + 1, timeout=2)
+            found = self.find_one()
             seen["found"] = found.gpus
             session = serving.ask("127.0.0.1", self.port + 1, "qwen3-32b", 4096, lambda line: None)
             seen["port"] = session.port
@@ -403,7 +410,7 @@ class WorkerStartTest(Timed):
         seen = {}
 
         def ask() -> None:
-            [found] = find_workers(at=["127.0.0.1"], port=self.port + 1, timeout=2)
+            found = self.find_one()
             seen["found"] = found.gpus
             try:
                 serving.ask("127.0.0.1", self.port + 1, "qwen3-32b", 4096, lambda line: None).close()
